@@ -66,13 +66,14 @@ public final class AetherProxyManager {
                 }
             }
             normalizeSelection();
-            refreshProxyStatusButtons();
         } catch (Exception e) {
             System.err.println("[Aether] Proxy config load failed: " + e.getMessage());
             PROXIES.clear();
             enabled = false;
             selectedIndex = -1;
+            return;
         }
+        refreshProxyStatusButtons();
     }
 
     public static synchronized void save() {
@@ -186,7 +187,8 @@ public final class AetherProxyManager {
 
     public static void refreshProxyStatusButtons() {
         Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft == null) {
+        // proxies load during client init, before 26.2 has created the gui
+        if (minecraft == null || minecraft.gui == null) {
             return;
         }
         refreshProxyStatusButtons(minecraft.gui.screen());
