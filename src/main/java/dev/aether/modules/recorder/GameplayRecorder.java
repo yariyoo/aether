@@ -250,7 +250,7 @@ public final class GameplayRecorder {
             logDiff("tab", lastTab, tab);
             lastTab = List.copyOf(tab);
         }
-        List<String> sidebar = TablistUtils.getSidebarLines();
+        List<String> sidebar = ClientUtils.getSidebarLines();
         if (!sidebar.equals(lastSidebar)) {
             event("sidebar", String.join(" | ", sidebar));
             lastSidebar = List.copyOf(sidebar);
