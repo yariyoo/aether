@@ -14,6 +14,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -34,6 +35,10 @@ public final class BlockMiner {
     private static final long RESCAN_INTERVAL_MS = 1000L;
     private static final long SKIP_BLOCK_MS = 15_000L;
     private static final long SKIP_VEIN_MS = 30_000L;
+    private static final long SKIP_DECORATION_MS = 300_000L;
+    private static final long PATH_PROGRESS_LOG_MS = 2000L;
+    private static final long STUCK_AFTER_MS = 4000L;
+    private static final double STUCK_DISTANCE = 0.5;
     private static final long NO_VEIN_NOTICE_MS = 5000L;
     private static final int CANDIDATE_LIMIT = 4000;
     private static final int MAX_VEINS_TRIED = 5;
@@ -59,6 +64,9 @@ public final class BlockMiner {
     private static BlockPos pathGoal;
     private static BlockPos pathFor;
     private static boolean justArrived;
+    private static Vec3 lastProgressPos;
+    private static long lastProgressAt;
+    private static long lastPathLogAt;
     private static AtomicInteger pathResult = new AtomicInteger(PATH_PENDING);
     private static final Map<BlockPos, Long> skipUntil = new HashMap<>();
     private static final MiningBlockIndex index = new MiningBlockIndex();
@@ -277,11 +285,18 @@ public final class BlockMiner {
         for (int v = 0; v < Math.min(MAX_VEINS_TRIED, veins.size()); v++) {
             MiningVeins.Vein vein = veins.get(v);
             List<BlockPos> blocks = vein.blocks();
+            MiningVeinFilter.Surroundings around = MiningVeinFilter.inspect(view, blocks);
+            if (!around.looksNatural()) {
+                MinerLog.log(String.format("vein %d (%d blocks, nearest %s) looks like decoration, skipping it: %s",
+                        v, blocks.size(), MinerLog.pos(blocks.getFirst()), around.describe()));
+                for (BlockPos pos : blocks) skip(pos, SKIP_DECORATION_MS);
+                continue;
+            }
             for (int b = 0; b < Math.min(MAX_BLOCKS_TRIED_PER_VEIN, blocks.size()); b++) {
                 BlockPos spot = MiningSpotFinder.find(view, blocks.get(b), feet, reach);
                 if (spot == null) continue;
-                MinerLog.log(String.format("vein %d (%d blocks, %.1f away): standing spot %s for %s",
-                        v, blocks.size(), vein.distance(), MinerLog.pos(spot), MinerLog.pos(blocks.get(b))));
+                MinerLog.log(String.format("vein %d (%d blocks, %.1f away, %s): standing spot %s for %s",
+                        v, blocks.size(), vein.distance(), around.describe(), MinerLog.pos(spot), MinerLog.pos(blocks.get(b))));
                 startPath(client, spot, blocks.get(b), blocks);
                 return;
             }
@@ -298,6 +313,9 @@ public final class BlockMiner {
         AtomicInteger result = new AtomicInteger(PATH_PENDING);
         pathResult = result;
         setPhase(Phase.PATHING);
+        lastProgressPos = client.player.position();
+        lastProgressAt = System.currentTimeMillis();
+        lastPathLogAt = lastProgressAt;
         MinerLog.log("walking to " + MinerLog.pos(spot) + " from " + MinerLog.pos(client.player.blockPosition()));
         PathfindingManager.startConfiguredWalk(client, spot.getX(), spot.getY(), spot.getZ(),
                 () -> result.compareAndSet(PATH_PENDING, PATH_DONE),
@@ -320,6 +338,27 @@ public final class BlockMiner {
             MinerLog.log("walk to " + MinerLog.pos(pathGoal) + " failed after " + elapsed + "ms, skipping that vein");
             skipVein();
             enterScanning("walk failed");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Vec3 position = client.player.position();
+        double remaining = Math.sqrt(client.player.blockPosition().distSqr(pathGoal));
+        if (now - lastPathLogAt >= PATH_PROGRESS_LOG_MS) {
+            lastPathLogAt = now;
+            MinerLog.log(String.format("walking: at %s, %.1f blocks from goal, pathfinder %s, %dms in",
+                    MinerLog.pos(client.player.blockPosition()), remaining,
+                    PathfindingManager.isNavigating() ? "navigating" : "idle", elapsed));
+        }
+        if (position.distanceTo(lastProgressPos) >= STUCK_DISTANCE) {
+            lastProgressPos = position;
+            lastProgressAt = now;
+        } else if (now - lastProgressAt > STUCK_AFTER_MS) {
+            MinerLog.log(String.format("stuck at %s for %dms, %.1f blocks from %s, pathfinder %s, skipping that vein",
+                    MinerLog.pos(client.player.blockPosition()), now - lastProgressAt, remaining,
+                    MinerLog.pos(pathGoal), PathfindingManager.isNavigating() ? "navigating" : "idle"));
+            PathfindingManager.stop();
+            skipVein();
+            enterScanning("stuck walking");
             return;
         }
         if (elapsed > PATH_TIMEOUT_MS) {
