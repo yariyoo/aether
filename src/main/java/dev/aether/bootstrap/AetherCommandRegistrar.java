@@ -19,6 +19,7 @@ import dev.aether.modules.farming.BedrockPlotMaker;
 import dev.aether.modules.interaction.EntityInteractManager;
 import dev.aether.modules.irc.IrcManager;
 import dev.aether.modules.metaldetector.MetalDetectorSolver;
+import dev.aether.modules.mining.BlockMiner;
 import dev.aether.modules.inventorymanager.AutoSellManager;
 import dev.aether.modules.movement.MovementPlaybackManager;
 import dev.aether.modules.pathfinding.PathfindingManager;
@@ -282,6 +283,11 @@ public final class AetherCommandRegistrar {
                             .then(ClientCommands.literal("pestexchange")
                                     .executes(ctx -> {
                                         PestExchangeManager.start(Minecraft.getInstance());
+                                        return 1;
+                                    }))
+                            .then(ClientCommands.literal("miner")
+                                    .executes(ctx -> {
+                                        BlockMiner.toggle(Minecraft.getInstance());
                                         return 1;
                                     }))
                             .then(ClientCommands.literal("metaldetector")

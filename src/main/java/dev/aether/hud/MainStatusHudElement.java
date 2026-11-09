@@ -251,6 +251,7 @@ public class MainStatusHudElement extends HudElement {
         return switch (st) {
             case FARMING       -> "Farming";
             case METAL_DETECTING -> "Metal Detecting";
+            case MINING        -> "Mining";
             case AUTO_CARNIVAL -> "Auto Carnival";
             case CLEANING      -> "Cleaning";
             case RECOVERING    -> "Recovering";
@@ -268,6 +269,7 @@ public class MainStatusHudElement extends HudElement {
         return switch (loc) {
             case GARDEN          -> "Garden";
             case CRYSTAL_HOLLOWS -> "Crystal Hollows";
+            case DWARVEN_MINES   -> "Dwarven Mines";
             case HUB             -> "Hub";
             case LOBBY           -> "Lobby";
             case LIMBO           -> "Limbo";

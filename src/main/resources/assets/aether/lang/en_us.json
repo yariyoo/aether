@@ -768,5 +768,19 @@
   "text.aether.twilight": "Twilight",
   "text.aether.aurora": "Aurora",
   "text.aether.starfield": "Starfield",
-  "text.aether.animated_shader_skies": "Animated shader skies"
+  "text.aether.animated_shader_skies": "Animated shader skies",
+  "text.aether.block_miner": "Block Miner",
+  "text.aether.mines_mithril_and_titanium_in_reach": "Mines mithril and titanium in reach",
+  "text.aether.which_blocks_the_miner_breaks": "Which blocks the miner breaks",
+  "text.aether.gray_mithril": "Gray Mithril",
+  "text.aether.green_mithril": "Green Mithril",
+  "text.aether.blue_mithril": "Blue Mithril",
+  "text.aether.titanium": "Titanium",
+  "text.aether.prefer_titanium": "Prefer Titanium",
+  "text.aether.behaviour": "Behaviour",
+  "text.aether.how_the_miner_handles_stuck_blocks": "How the miner handles stuck blocks",
+  "text.aether.run_aether_miner_to_start_or_stop_it_mines_blocks_in_reach_without_moving": "Run /aether miner to start or stop. It mines blocks in reach without moving.",
+  "text.aether.block_timeout": "Block Timeout",
+  "text.aether.mining": "Mining",
+  "text.aether.dwarven_mines": "Dwarven Mines"
 }

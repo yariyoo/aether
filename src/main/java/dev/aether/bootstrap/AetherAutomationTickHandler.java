@@ -15,6 +15,7 @@ import dev.aether.modules.inventorymanager.BookCombineManager;
 import dev.aether.modules.inventorymanager.BoosterCookieManager;
 import dev.aether.modules.inventorymanager.GeorgeManager;
 import dev.aether.modules.metaldetector.MetalDetectorSolver;
+import dev.aether.modules.mining.BlockMiner;
 import dev.aether.modules.misc.AutoCarnivalManager;
 import dev.aether.modules.inventorymanager.JunkManager;
 import dev.aether.modules.pathfinding.PathfindingManager;
@@ -163,6 +164,7 @@ public final class AetherAutomationTickHandler {
         PestAotvManager.updatePreparationAotv(client);
         PestDestroyer.update();
         MetalDetectorSolver.update();
+        BlockMiner.update();
         VacuumParticleDebug.onClientTick();
     }
 

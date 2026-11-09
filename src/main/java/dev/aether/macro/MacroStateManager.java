@@ -19,6 +19,7 @@ import dev.aether.modules.inventorymanager.BookCombineManager;
 import dev.aether.modules.inventorymanager.GeorgeManager;
 import dev.aether.modules.inventorymanager.JunkManager;
 import dev.aether.modules.metaldetector.MetalDetectorSolver;
+import dev.aether.modules.mining.BlockMiner;
 import dev.aether.modules.misc.AutoCarnivalManager;
 import dev.aether.modules.movement.MovementPlaybackManager;
 import dev.aether.modules.pathfinding.PathfindingManager;
@@ -243,6 +244,7 @@ public class MacroStateManager {
         // Stop any active internal farming macro.
         runOnClientThread(client, () -> FarmingMacroManager.disable(client));
         MetalDetectorSolver.stopForMacro(client);
+        BlockMiner.stopForMacro(client);
         AutoCarnivalManager.stopForMacro(client);
         FailsafeManager.reset();
         SqueakyMousematManager.clearReapplyAttempt();

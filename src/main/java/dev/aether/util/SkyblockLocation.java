@@ -25,6 +25,9 @@ public final class SkyblockLocation {
         if (area.equalsIgnoreCase("Area: Crystal Hollows")) {
             return MacroState.Location.CRYSTAL_HOLLOWS;
         }
+        if (area.equalsIgnoreCase("Area: Dwarven Mines")) {
+            return MacroState.Location.DWARVEN_MINES;
+        }
         return MacroState.Location.HUB;
     }
 }

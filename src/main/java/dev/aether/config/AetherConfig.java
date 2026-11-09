@@ -560,6 +560,13 @@ public final class AetherConfig {
                         "metalDetectorBackpackBlacklist",
                         Collections.emptyList(),
                         String.class);
+        public static final BooleanEntry MINER_GRAY_MITHRIL = Config.bool("minerGrayMithril", true);
+        public static final BooleanEntry MINER_GREEN_MITHRIL = Config.bool("minerGreenMithril", true);
+        public static final BooleanEntry MINER_BLUE_MITHRIL = Config.bool("minerBlueMithril", true);
+        public static final BooleanEntry MINER_TITANIUM = Config.bool("minerTitanium", true);
+        public static final BooleanEntry MINER_PREFER_TITANIUM = Config.bool("minerPreferTitanium", true);
+        public static final FloatEntry MINER_BLOCK_TIMEOUT_SECONDS = Config
+                        .floatVal("minerBlockTimeoutSeconds", 8.0f).range(2.0f, 30.0f);
 
         // -- INVENTORY MANAGERS ----------------------------------------------------
 

@@ -5,6 +5,7 @@ public class MacroState {
         OFF,
         FARMING,
         METAL_DETECTING,
+        MINING,
         AUTO_CARNIVAL,
         CLEANING,
         RECOVERING,
@@ -19,6 +20,6 @@ public class MacroState {
     }
 
     public enum Location {
-        GARDEN, CRYSTAL_HOLLOWS, HUB, LOBBY, LIMBO, UNKNOWN
+        GARDEN, CRYSTAL_HOLLOWS, DWARVEN_MINES, HUB, LOBBY, LIMBO, UNKNOWN
     }
 }
