@@ -1,5 +1,6 @@
 package dev.aether.feature;
 
+import dev.aether.modules.recorder.GameplayRecorder;
 import dev.aether.bootstrap.AetherChatEvents;
 import dev.aether.bootstrap.AetherCommandRegistrar;
 import dev.aether.bootstrap.AetherScreenHooks;
@@ -63,6 +64,7 @@ public final class ClientFeatureBootstrap {
         AetherAuthService.initialize();
         IrcManager.initialize();
         PlaySessionTracker.register();
+        GameplayRecorder.register();
         PathVisualizer.register();
 
         LevelRenderEvents.END_MAIN.register(ctx -> {

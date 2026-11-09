@@ -1,5 +1,6 @@
 package dev.aether.bootstrap;
 
+import dev.aether.modules.recorder.GameplayRecorder;
 import com.mojang.brigadier.arguments.FloatArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -53,9 +54,12 @@ public final class AetherCommandRegistrar {
     private static void registerLegacyCommandIntercepts() {
         // only fires for chat, never for commands, so slash commands still run normally.
         ClientSendMessageEvents.ALLOW_CHAT.register(message -> !IrcManager.interceptChat(message));
-        ClientSendMessageEvents.CHAT.register(message ->
-                MovementPlaybackManager.recordOutgoingChat(message, false));
+        ClientSendMessageEvents.CHAT.register(message -> {
+            MovementPlaybackManager.recordOutgoingChat(message, false);
+            GameplayRecorder.onOutgoing(message, false);
+        });
         ClientSendMessageEvents.COMMAND.register(command -> {
+            GameplayRecorder.onOutgoing(command, true);
             MovementPlaybackManager.recordOutgoingChat(command, true);
             if (command.equalsIgnoreCase("call george")) {
                 dev.aether.modules.inventorymanager.GeorgeManager.onCallGeorgeSent();
@@ -283,6 +287,11 @@ public final class AetherCommandRegistrar {
                             .then(ClientCommands.literal("pestexchange")
                                     .executes(ctx -> {
                                         PestExchangeManager.start(Minecraft.getInstance());
+                                        return 1;
+                                    }))
+                            .then(ClientCommands.literal("record")
+                                    .executes(ctx -> {
+                                        GameplayRecorder.toggle();
                                         return 1;
                                     }))
                             .then(ClientCommands.literal("miner")

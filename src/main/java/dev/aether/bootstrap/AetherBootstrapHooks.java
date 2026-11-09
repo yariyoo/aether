@@ -167,6 +167,13 @@ public final class AetherBootstrapHooks {
         default void onBlockBreakClick(Minecraft minecraft, BlockPos pos) {
         }
 
+        default void onContainerInput(int containerId, int slot, int button,
+                net.minecraft.world.inventory.ContainerInput input) {
+        }
+
+        default void onEntityInteract(net.minecraft.world.entity.Entity entity, boolean attack) {
+        }
+
         default void onBlockChanged(Minecraft minecraft, BlockPos pos, BlockState oldState, BlockState newState) {
         }
 
@@ -427,6 +434,15 @@ public final class AetherBootstrapHooks {
 
     public static void onBlockBreakClick(Minecraft minecraft, BlockPos pos) {
         hooks.onBlockBreakClick(minecraft, pos);
+    }
+
+    public static void onContainerInput(int containerId, int slot, int button,
+            net.minecraft.world.inventory.ContainerInput input) {
+        hooks.onContainerInput(containerId, slot, button, input);
+    }
+
+    public static void onEntityInteract(net.minecraft.world.entity.Entity entity, boolean attack) {
+        hooks.onEntityInteract(entity, attack);
     }
 
     public static void onBlockChanged(Minecraft minecraft, BlockPos pos, BlockState oldState, BlockState newState) {

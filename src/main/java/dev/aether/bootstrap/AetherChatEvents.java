@@ -1,5 +1,6 @@
 package dev.aether.bootstrap;
 
+import dev.aether.modules.recorder.GameplayRecorder;
 import dev.aether.config.AetherConfig;
 import dev.aether.config.ConfigHelpers;
 import dev.aether.macro.MacroState;
@@ -49,6 +50,7 @@ public final class AetherChatEvents {
             String lowerText = text.toLowerCase();
             String lowerPlainText = plainText.toLowerCase();
 
+            GameplayRecorder.onGameMessage(plainText, overlay);
             MetalDetectorSolver.onGameMessage(Minecraft.getInstance(), plainText, overlay);
 
             if (overlay) {

@@ -1,5 +1,6 @@
 package dev.aether.feature;
 
+import dev.aether.modules.recorder.GameplayRecorder;
 import com.mojang.authlib.GameProfile;
 import dev.aether.Aether;
 import dev.aether.config.AetherConfig;
@@ -323,11 +324,24 @@ public final class LiveAetherBootstrapHooks implements AetherBootstrapHooks.Feat
         DelayedBlockBreakTracker.onImmediateBlockBreak(pos);
         BpsTracker.onBlockBreak();
         FailsafeManager.onBlockBreak(pos);
+        GameplayRecorder.onBlockBreak(pos);
     }
 
     @Override
     public void onBlockBreakClick(Minecraft minecraft, net.minecraft.core.BlockPos pos) {
         DelayedBlockBreakTracker.onBlockBreakClick(minecraft, pos);
+        GameplayRecorder.onBlockHit(minecraft, pos);
+    }
+
+    @Override
+    public void onContainerInput(int containerId, int slot, int button,
+            net.minecraft.world.inventory.ContainerInput input) {
+        GameplayRecorder.onContainerInput(containerId, slot, button, input);
+    }
+
+    @Override
+    public void onEntityInteract(net.minecraft.world.entity.Entity entity, boolean attack) {
+        GameplayRecorder.onEntityInteract(entity, attack);
     }
 
     @Override
