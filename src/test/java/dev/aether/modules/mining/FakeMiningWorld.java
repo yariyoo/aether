@@ -11,6 +11,7 @@ import java.util.Set;
 final class FakeMiningWorld implements MiningView {
     final Map<BlockPos, MiningBlockKind> ores = new HashMap<>();
     final Set<BlockPos> stone = new HashSet<>();
+    final Set<BlockPos> planks = new HashSet<>();
 
     FakeMiningWorld ore(int x, int y, int z, MiningBlockKind kind) {
         ores.put(new BlockPos(x, y, z), kind);
@@ -19,6 +20,11 @@ final class FakeMiningWorld implements MiningView {
 
     FakeMiningWorld stone(int x, int y, int z) {
         stone.add(new BlockPos(x, y, z));
+        return this;
+    }
+
+    FakeMiningWorld planks(int x, int y, int z) {
+        planks.add(new BlockPos(x, y, z));
         return this;
     }
 
@@ -38,7 +44,19 @@ final class FakeMiningWorld implements MiningView {
 
     @Override
     public boolean isOpen(BlockPos pos) {
-        return !ores.containsKey(pos) && !stone.contains(pos);
+        return !ores.containsKey(pos) && !stone.contains(pos) && !planks.contains(pos);
+    }
+
+    @Override
+    public boolean isNaturalHost(BlockPos pos) {
+        return stone.contains(pos) || ores.containsKey(pos);
+    }
+
+    @Override
+    public String nameAt(BlockPos pos) {
+        if (planks.contains(pos)) return "planks";
+        if (stone.contains(pos)) return "stone";
+        return ores.containsKey(pos) ? "ore" : "air";
     }
 
     @Override

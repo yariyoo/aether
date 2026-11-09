@@ -2,13 +2,22 @@ package dev.aether.modules.mining;
 
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.Set;
+
 final class LiveMiningView implements MiningView {
+    private static final Set<Block> NATURAL_HOSTS = Set.of(
+            Blocks.STONE, Blocks.COBBLESTONE, Blocks.ANDESITE, Blocks.DIORITE, Blocks.GRANITE,
+            Blocks.GRAVEL, Blocks.BEDROCK);
+
     private final ClientLevel level;
     private final Entity viewer;
 
@@ -25,6 +34,17 @@ final class LiveMiningView implements MiningView {
     @Override
     public boolean isOpen(BlockPos pos) {
         return level.getBlockState(pos).getCollisionShape(level, pos).isEmpty();
+    }
+
+    @Override
+    public boolean isNaturalHost(BlockPos pos) {
+        Block block = level.getBlockState(pos).getBlock();
+        return NATURAL_HOSTS.contains(block) || MiningBlockKind.fromBlock(block) != null;
+    }
+
+    @Override
+    public String nameAt(BlockPos pos) {
+        return BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).getBlock()).getPath();
     }
 
     @Override
