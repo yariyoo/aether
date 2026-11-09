@@ -30,7 +30,7 @@ public final class BlockMinerRegistryProvider extends AbstractMiningRegistryProv
                 .add(new InfoSetting("Trigger",
                         () -> "Run /aether miner to start or stop. It finds ore anywhere in loaded chunks and walks to the nearest vein.")
                         .multiline())
-                .add(new SliderSetting("Block Timeout", 2, 30,
+                .add(new SliderSetting("Block Timeout", 1, 15,
                         () -> AetherConfig.MINER_BLOCK_TIMEOUT_SECONDS.get(), value -> {
                             AetherConfig.MINER_BLOCK_TIMEOUT_SECONDS.set(Math.round(value * 2) / 2.0f);
                             AetherConfig.save();

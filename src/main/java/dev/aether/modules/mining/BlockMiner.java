@@ -37,7 +37,10 @@ public final class BlockMiner {
     private static final long SKIP_VEIN_MS = 30_000L;
     private static final long SKIP_DECORATION_MS = 300_000L;
     private static final long PATH_PROGRESS_LOG_MS = 2000L;
-    private static final long STUCK_AFTER_MS = 5000L;
+    private static final long STUCK_AFTER_MS = 3000L;
+    private static final int MAX_PLANS_KEPT = 6;
+    private static final int TIMEOUTS_BEFORE_LEAVING_SPOT = 2;
+    private static final long MINING_LOG_MS = 1000L;
     private static final double STUCK_PROGRESS = 1.0;
     private static final double CLOSE_ENOUGH = 1.6;
     private static final long SKIP_SPOT_MS = 120_000L;
@@ -74,7 +77,10 @@ public final class BlockMiner {
     private static long lastProgressAt;
     private static int pathTicks;
     private static int minedHere;
+    private static int timeoutsHere;
+    private static long lastMiningLogAt;
     private static final Map<BlockPos, Long> badSpots = new HashMap<>();
+    private static List<MiningSpotPlanner.Plan> fallbackPlans = new ArrayList<>();
     private static final Random random = new Random();
     private static long lastPathLogAt;
     private static AtomicInteger pathResult = new AtomicInteger(PATH_PENDING);
@@ -228,6 +234,7 @@ public final class BlockMiner {
         if (isCrosshairOnTarget(client)) {
             RotationManager.cancelRotation();
             MinerLog.log("on target after " + (System.currentTimeMillis() - phaseStartedAt) + "ms, mining");
+            lastMiningLogAt = System.currentTimeMillis();
             setPhase(Phase.MINING);
             return;
         }
@@ -247,6 +254,7 @@ public final class BlockMiner {
         if (!MiningTargetSelector.isStillMineable(view, target, allowedKinds())) {
             blocksMined++;
             minedHere++;
+            timeoutsHere = 0;
             MinerLog.log("mined " + target.kind() + " at " + MinerLog.pos(target.pos()) + " in "
                     + (System.currentTimeMillis() - phaseStartedAt) + "ms, now "
                     + blockName(client, target.pos()) + " (total " + blocksMined + ")");
@@ -258,14 +266,30 @@ public final class BlockMiner {
             setPhase(Phase.AIMING);
             return;
         }
+        long now = System.currentTimeMillis();
         long timeoutMs = Math.round(AetherConfig.MINER_BLOCK_TIMEOUT_SECONDS.get() * 1000.0f);
-        if (System.currentTimeMillis() - phaseStartedAt > timeoutMs) {
-            MinerLog.log("gave up on " + MinerLog.pos(target.pos()) + " after " + timeoutMs + "ms");
+        if (now - phaseStartedAt > timeoutMs) {
+            timeoutsHere++;
+            MinerLog.log("gave up on " + MinerLog.pos(target.pos()) + " after " + timeoutMs + "ms ("
+                    + timeoutsHere + " in a row here), " + miningState(client));
             skip(target.pos(), SKIP_BLOCK_MS);
+            if (timeoutsHere >= TIMEOUTS_BEFORE_LEAVING_SPOT) {
+                MinerLog.log("blocks here are not breaking, leaving " + MinerLog.pos(client.player.blockPosition()));
+                badSpots.put(client.player.blockPosition(), now + SKIP_SPOT_MS);
+                timeoutsHere = 0;
+                minedHere = 0;
+                enterScanning("blocks not breaking");
+                return;
+            }
             enterSearching("mine timeout");
             return;
         }
         MacroInput.setAttack(client.options.keyAttack, true);
+        if (now - lastMiningLogAt >= MINING_LOG_MS) {
+            lastMiningLogAt = now;
+            MinerLog.log("mining " + MinerLog.pos(target.pos()) + " for " + (now - phaseStartedAt) + "ms, "
+                    + miningState(client));
+        }
     }
 
     private static void tickScanning(Minecraft client, MiningView view) {
@@ -334,8 +358,27 @@ public final class BlockMiner {
             return;
         }
         MiningSpotPlanner.Plan chosen = pickAmongBest(plans);
+        fallbackPlans = new ArrayList<>(plans.subList(0, Math.min(MAX_PLANS_KEPT, plans.size())));
+        fallbackPlans.remove(chosen);
         MinerLog.log("chose spot " + MinerLog.pos(chosen.spot()) + " (" + chosen.reachable() + " ore in reach)");
-        startPath(client, chosen.spot(), chosen.forBlock(), chosen.vein());
+        startPlan(client, chosen);
+    }
+
+    private static void startPlan(Minecraft client, MiningSpotPlanner.Plan plan) {
+        startPath(client, plan.spot(), plan.forBlock(), plan.vein());
+    }
+
+    // an unwalkable spot is rejected before moving, so go straight to the next best one instead of rescanning
+    private static boolean tryNextPlan(Minecraft client) {
+        while (!fallbackPlans.isEmpty()) {
+            MiningSpotPlanner.Plan next = fallbackPlans.removeFirst();
+            if (badSpots.containsKey(next.spot())) continue;
+            MinerLog.log("trying next spot " + MinerLog.pos(next.spot()) + " (" + next.reachable() + " ore, "
+                    + String.format("%.1f", next.distance()) + " away)");
+            startPlan(client, next);
+            return true;
+        }
+        return false;
     }
 
     private static MiningSpotPlanner.Plan pickAmongBest(List<MiningSpotPlanner.Plan> plans) {
@@ -357,10 +400,11 @@ public final class BlockMiner {
         pathTicks = 0;
         lastPathLogAt = lastProgressAt;
         MinerLog.log("walking to " + MinerLog.pos(spot) + " from " + MinerLog.pos(client.player.blockPosition()));
+        // full paths only: a partial path walks into a wall and stops there
         PathfindingManager.startConfiguredWalk(client, spot.getX(), spot.getY(), spot.getZ(),
                 () -> result.compareAndSet(PATH_PENDING, PATH_DONE),
                 () -> result.compareAndSet(PATH_PENDING, PATH_FAILED),
-                true, 0.5);
+                true, 0.5, false, true);
     }
 
     private static void tickPathing(Minecraft client, MiningView view) {
@@ -378,8 +422,11 @@ public final class BlockMiner {
             return;
         }
         if (result == PATH_FAILED) {
-            MinerLog.log("walk to " + MinerLog.pos(pathGoal) + " failed after " + elapsed + "ms, avoiding that spot");
-            abandonPath("walk failed");
+            MinerLog.log("no complete walkable path to " + MinerLog.pos(pathGoal) + " (" + elapsed
+                    + "ms), avoiding that spot");
+            badSpots.put(pathGoal, System.currentTimeMillis() + SKIP_SPOT_MS);
+            if (tryNextPlan(client)) return;
+            abandonPath("no walkable path");
             return;
         }
         if (pathTicks % OPPORTUNISTIC_CHECK_TICKS == 0 && tryMineOnTheWay(client, view)) return;
@@ -399,6 +446,8 @@ public final class BlockMiner {
                     now - lastProgressAt, MinerLog.pos(client.player.blockPosition()), remaining,
                     MinerLog.pos(pathGoal), bestGoalDistance));
             PathfindingManager.stop();
+            badSpots.put(pathGoal, System.currentTimeMillis() + SKIP_SPOT_MS);
+            if (tryNextPlan(client)) return;
             abandonPath("stuck walking");
             return;
         }
@@ -429,6 +478,7 @@ public final class BlockMiner {
     private static void arrive() {
         justArrived = true;
         minedHere = 0;
+        timeoutsHere = 0;
         enterSearching("arrived");
     }
 
@@ -469,6 +519,14 @@ public final class BlockMiner {
         return hit instanceof BlockHitResult blockHit
                 && hit.getType() == HitResult.Type.BLOCK
                 && blockHit.getBlockPos().equals(target.pos());
+    }
+
+    private static String miningState(Minecraft client) {
+        var gameMode = client.gameMode;
+        return "attack " + (client.options.keyAttack.isDown() ? "held" : "released")
+                + ", crosshair " + describeCrosshair(client)
+                + ", destroying " + (gameMode != null && gameMode.isDestroying())
+                + " stage " + (gameMode == null ? -1 : gameMode.getDestroyStage());
     }
 
     private static String describeCrosshair(Minecraft client) {
