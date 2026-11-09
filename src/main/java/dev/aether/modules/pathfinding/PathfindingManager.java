@@ -1212,10 +1212,7 @@ public final class PathfindingManager {
             navigating = false;
             activeMode = NavigationMode.NONE;
             clearTransientDebugRenderingIfActive();
-            if (mc.player != null) {
-                ClientUtils.sendMessage("\u00A7eWalk path result was partial. Falling back to the next recovery path...",
-                        false);
-            }
+            ClientUtils.sendDebugMessage("Walk path result was partial, rejecting it.");
             if (walkFailureCallback != null) {
                 walkFailureCallback.run();
             }
