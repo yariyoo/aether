@@ -20,7 +20,7 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.Iterator;
+import java.util.Random;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -37,15 +37,21 @@ public final class BlockMiner {
     private static final long SKIP_VEIN_MS = 30_000L;
     private static final long SKIP_DECORATION_MS = 300_000L;
     private static final long PATH_PROGRESS_LOG_MS = 2000L;
-    private static final long STUCK_AFTER_MS = 4000L;
-    private static final double STUCK_DISTANCE = 0.5;
+    private static final long STUCK_AFTER_MS = 5000L;
+    private static final double STUCK_PROGRESS = 1.0;
+    private static final double CLOSE_ENOUGH = 1.6;
+    private static final long SKIP_SPOT_MS = 120_000L;
+    private static final int OPPORTUNISTIC_CHECK_TICKS = 5;
+    private static final int REGEN_MIN_MINED = 5;
+    private static final long REGEN_WAIT_MS = 8000L;
+    // spots scoring within this share of the best are treated as equal and picked between at random
+    private static final double TIE_SHARE = 0.9;
     private static final long NO_VEIN_NOTICE_MS = 5000L;
     private static final int CANDIDATE_LIMIT = 4000;
-    private static final int MAX_VEINS_TRIED = 5;
-    private static final int MAX_BLOCKS_TRIED_PER_VEIN = 12;
+    private static final int MAX_VEINS_RANKED = 16;
     private static final int DIAGNOSTIC_RADIUS = 6;
 
-    private enum Phase { SEARCHING, AIMING, MINING, SCANNING, PATHING }
+    private enum Phase { SEARCHING, AIMING, MINING, SCANNING, PATHING, REGEN_WAIT }
 
     private static final int PATH_PENDING = 0;
     private static final int PATH_DONE = 1;
@@ -64,8 +70,12 @@ public final class BlockMiner {
     private static BlockPos pathGoal;
     private static BlockPos pathFor;
     private static boolean justArrived;
-    private static Vec3 lastProgressPos;
+    private static double bestGoalDistance;
     private static long lastProgressAt;
+    private static int pathTicks;
+    private static int minedHere;
+    private static final Map<BlockPos, Long> badSpots = new HashMap<>();
+    private static final Random random = new Random();
     private static long lastPathLogAt;
     private static AtomicInteger pathResult = new AtomicInteger(PATH_PENDING);
     private static final Map<BlockPos, Long> skipUntil = new HashMap<>();
@@ -112,7 +122,9 @@ public final class BlockMiner {
         }
         enabled = true;
         blocksMined = 0;
+        minedHere = 0;
         skipUntil.clear();
+        badSpots.clear();
         levelIdentity = System.identityHashCode(client.level);
         index.reset();
         MinerLog.log("started: allowed " + allowed
@@ -172,7 +184,8 @@ public final class BlockMiner {
             case AIMING -> tickAiming(client, view);
             case MINING -> tickMining(client, view);
             case SCANNING -> tickScanning(client, view);
-            case PATHING -> tickPathing(client);
+            case PATHING -> tickPathing(client, view);
+            case REGEN_WAIT -> tickRegenWait(client, view);
         }
     }
 
@@ -188,6 +201,11 @@ public final class BlockMiner {
                 skip(pathFor, SKIP_BLOCK_MS);
             }
             justArrived = false;
+            if (minedHere >= REGEN_MIN_MINED) {
+                MinerLog.log("spot gave " + minedHere + " blocks, waiting up to " + REGEN_WAIT_MS + "ms for it to regenerate");
+                setPhase(Phase.REGEN_WAIT);
+                return;
+            }
             setPhase(Phase.SCANNING);
             lastScanAt = 0L;
             return;
@@ -228,6 +246,7 @@ public final class BlockMiner {
     private static void tickMining(Minecraft client, MiningView view) {
         if (!MiningTargetSelector.isStillMineable(view, target, allowedKinds())) {
             blocksMined++;
+            minedHere++;
             MinerLog.log("mined " + target.kind() + " at " + MinerLog.pos(target.pos()) + " in "
                     + (System.currentTimeMillis() - phaseStartedAt) + "ms, now "
                     + blockName(client, target.pos()) + " (total " + blocksMined + ")");
@@ -255,6 +274,10 @@ public final class BlockMiner {
         if (now - lastScanAt < RESCAN_INTERVAL_MS) return;
         lastScanAt = now;
 
+        if (!index.hasFinishedASweep()) {
+            MinerLog.log("waiting for the first index sweep before choosing (" + index.progress() + ")");
+            return;
+        }
         BlockPos feet = client.player.blockPosition();
         Set<MiningBlockKind> allowed = allowedKinds();
         long started = System.nanoTime();
@@ -270,7 +293,6 @@ public final class BlockMiner {
                 candidates.size(), live.size(), veins.size(), skipUntil.size(), (System.nanoTime() - started) / 1e6));
 
         if (veins.isEmpty()) {
-            if (!index.hasFinishedASweep()) return;
             if (noVeinSince == 0L) noVeinSince = now;
             if (!noVeinNoticeSent && now - noVeinSince > NO_VEIN_NOTICE_MS) {
                 ClientUtils.sendMessage("§eNo minable blocks nearby. Waiting for them to regenerate...", false);
@@ -282,28 +304,45 @@ public final class BlockMiner {
         noVeinNoticeSent = false;
 
         double reach = reach(client);
-        for (int v = 0; v < Math.min(MAX_VEINS_TRIED, veins.size()); v++) {
-            MiningVeins.Vein vein = veins.get(v);
-            List<BlockPos> blocks = vein.blocks();
+        List<MiningVeins.Vein> natural = new ArrayList<>();
+        for (int v = 0; v < veins.size() && natural.size() < MAX_VEINS_RANKED; v++) {
+            List<BlockPos> blocks = veins.get(v).blocks();
             MiningVeinFilter.Surroundings around = MiningVeinFilter.inspect(view, blocks);
-            if (!around.looksNatural()) {
-                MinerLog.log(String.format("vein %d (%d blocks, nearest %s) looks like decoration, skipping it: %s",
-                        v, blocks.size(), MinerLog.pos(blocks.getFirst()), around.describe()));
+            if (around.looksNatural()) {
+                natural.add(veins.get(v));
+            } else {
+                MinerLog.log(String.format("vein (%d blocks, nearest %s) looks like decoration, skipping it: %s",
+                        blocks.size(), MinerLog.pos(blocks.getFirst()), around.describe()));
                 for (BlockPos pos : blocks) skip(pos, SKIP_DECORATION_MS);
-                continue;
             }
-            for (int b = 0; b < Math.min(MAX_BLOCKS_TRIED_PER_VEIN, blocks.size()); b++) {
-                BlockPos spot = MiningSpotFinder.find(view, blocks.get(b), feet, reach);
-                if (spot == null) continue;
-                MinerLog.log(String.format("vein %d (%d blocks, %.1f away, %s): standing spot %s for %s",
-                        v, blocks.size(), vein.distance(), around.describe(), MinerLog.pos(spot), MinerLog.pos(blocks.get(b))));
-                startPath(client, spot, blocks.get(b), blocks);
-                return;
-            }
-            MinerLog.log(String.format("vein %d (%d blocks, nearest %s) has no reachable standing spot, skipping it",
-                    v, blocks.size(), MinerLog.pos(blocks.getFirst())));
-            for (BlockPos pos : blocks) skip(pos, SKIP_VEIN_MS);
         }
+        long planStarted = System.nanoTime();
+        List<MiningSpotPlanner.Plan> plans = MiningSpotPlanner.rank(view, natural, live, feet, reach,
+                badSpots.keySet(), MAX_VEINS_RANKED);
+        MinerLog.log(String.format("ranked %d spots from %d veins in %.1fms", plans.size(), natural.size(),
+                (System.nanoTime() - planStarted) / 1e6));
+        for (int i = 0; i < Math.min(3, plans.size()); i++) {
+            MiningSpotPlanner.Plan p = plans.get(i);
+            MinerLog.log(String.format("  #%d spot %s reaches %d ore, %.1f away, score %.2f",
+                    i + 1, MinerLog.pos(p.spot()), p.reachable(), p.distance(), p.score()));
+        }
+        if (plans.isEmpty()) {
+            MinerLog.log("no standing spot reaches any of the " + natural.size() + " nearest veins, skipping them");
+            for (MiningVeins.Vein vein : natural) {
+                for (BlockPos pos : vein.blocks()) skip(pos, SKIP_VEIN_MS);
+            }
+            return;
+        }
+        MiningSpotPlanner.Plan chosen = pickAmongBest(plans);
+        MinerLog.log("chose spot " + MinerLog.pos(chosen.spot()) + " (" + chosen.reachable() + " ore in reach)");
+        startPath(client, chosen.spot(), chosen.forBlock(), chosen.vein());
+    }
+
+    private static MiningSpotPlanner.Plan pickAmongBest(List<MiningSpotPlanner.Plan> plans) {
+        double cutoff = plans.getFirst().score() * TIE_SHARE;
+        int ties = 0;
+        while (ties < plans.size() && plans.get(ties).score() >= cutoff) ties++;
+        return plans.get(random.nextInt(Math.max(1, ties)));
     }
 
     private static void startPath(Minecraft client, BlockPos spot, BlockPos forBlock, List<BlockPos> vein) {
@@ -313,8 +352,9 @@ public final class BlockMiner {
         AtomicInteger result = new AtomicInteger(PATH_PENDING);
         pathResult = result;
         setPhase(Phase.PATHING);
-        lastProgressPos = client.player.position();
+        bestGoalDistance = Math.sqrt(client.player.blockPosition().distSqr(spot));
         lastProgressAt = System.currentTimeMillis();
+        pathTicks = 0;
         lastPathLogAt = lastProgressAt;
         MinerLog.log("walking to " + MinerLog.pos(spot) + " from " + MinerLog.pos(client.player.blockPosition()));
         PathfindingManager.startConfiguredWalk(client, spot.getX(), spot.getY(), spot.getZ(),
@@ -323,49 +363,99 @@ public final class BlockMiner {
                 true, 0.5);
     }
 
-    private static void tickPathing(Minecraft client) {
+    private static void tickPathing(Minecraft client, MiningView view) {
         releaseAttack(client);
-        long elapsed = System.currentTimeMillis() - phaseStartedAt;
+        pathTicks++;
+        long now = System.currentTimeMillis();
+        long elapsed = now - phaseStartedAt;
         int result = pathResult.get();
-        if (result == PATH_DONE) {
-            MinerLog.log("arrived near " + MinerLog.pos(pathGoal) + " at " + MinerLog.pos(client.player.blockPosition())
-                    + " after " + elapsed + "ms");
-            justArrived = true;
-            enterSearching("arrived");
+        double remaining = Math.sqrt(client.player.blockPosition().distSqr(pathGoal));
+        if (result == PATH_DONE || remaining <= CLOSE_ENOUGH) {
+            if (result != PATH_DONE) PathfindingManager.stop();
+            MinerLog.log(String.format("arrived near %s at %s (%.1f off) after %dms",
+                    MinerLog.pos(pathGoal), MinerLog.pos(client.player.blockPosition()), remaining, elapsed));
+            arrive();
             return;
         }
         if (result == PATH_FAILED) {
-            MinerLog.log("walk to " + MinerLog.pos(pathGoal) + " failed after " + elapsed + "ms, skipping that vein");
-            skipVein();
-            enterScanning("walk failed");
+            MinerLog.log("walk to " + MinerLog.pos(pathGoal) + " failed after " + elapsed + "ms, avoiding that spot");
+            abandonPath("walk failed");
             return;
         }
-        long now = System.currentTimeMillis();
-        Vec3 position = client.player.position();
-        double remaining = Math.sqrt(client.player.blockPosition().distSqr(pathGoal));
+        if (pathTicks % OPPORTUNISTIC_CHECK_TICKS == 0 && tryMineOnTheWay(client, view)) return;
+
         if (now - lastPathLogAt >= PATH_PROGRESS_LOG_MS) {
             lastPathLogAt = now;
-            MinerLog.log(String.format("walking: at %s, %.1f blocks from goal, pathfinder %s, %dms in",
-                    MinerLog.pos(client.player.blockPosition()), remaining,
+            MinerLog.log(String.format("walking: at %s, %.1f blocks from goal (best %.1f), pathfinder %s, %dms in",
+                    MinerLog.pos(client.player.blockPosition()), remaining, bestGoalDistance,
                     PathfindingManager.isNavigating() ? "navigating" : "idle", elapsed));
         }
-        if (position.distanceTo(lastProgressPos) >= STUCK_DISTANCE) {
-            lastProgressPos = position;
+        // judge progress by distance to the goal, since the walker can jitter in place without getting closer
+        if (remaining <= bestGoalDistance - STUCK_PROGRESS) {
+            bestGoalDistance = remaining;
             lastProgressAt = now;
         } else if (now - lastProgressAt > STUCK_AFTER_MS) {
-            MinerLog.log(String.format("stuck at %s for %dms, %.1f blocks from %s, pathfinder %s, skipping that vein",
-                    MinerLog.pos(client.player.blockPosition()), now - lastProgressAt, remaining,
-                    MinerLog.pos(pathGoal), PathfindingManager.isNavigating() ? "navigating" : "idle"));
+            MinerLog.log(String.format("no progress for %dms at %s, %.1f blocks from %s (best %.1f), avoiding that spot",
+                    now - lastProgressAt, MinerLog.pos(client.player.blockPosition()), remaining,
+                    MinerLog.pos(pathGoal), bestGoalDistance));
             PathfindingManager.stop();
-            skipVein();
-            enterScanning("stuck walking");
+            abandonPath("stuck walking");
             return;
         }
         if (elapsed > PATH_TIMEOUT_MS) {
             MinerLog.log("walk to " + MinerLog.pos(pathGoal) + " timed out at " + MinerLog.pos(client.player.blockPosition()));
             PathfindingManager.stop();
-            skipVein();
-            enterScanning("walk timeout");
+            abandonPath("walk timeout");
+        }
+    }
+
+    // ore that comes into reach on the way is mined straight away instead of walking past it
+    private static boolean tryMineOnTheWay(Minecraft client, MiningView view) {
+        MiningTargetSelector.Target found = MiningTargetSelector.select(view,
+                client.player.getEyePosition(), client.player.getViewVector(1.0f), reach(client),
+                allowedKinds(), AetherConfig.MINER_PREFER_TITANIUM.get(), skipUntil.keySet());
+        if (found == null || !MiningVeinFilter.inspect(view, List.of(found.pos())).looksNatural()) return false;
+        MinerLog.log("ore came into reach while walking: " + found.kind() + " at " + MinerLog.pos(found.pos())
+                + ", stopping to mine it");
+        PathfindingManager.stop();
+        minedHere = 0;
+        target = found;
+        RotationManager.cancelRotation();
+        RotationManager.initiateRotation(client, found.aim(), 0L);
+        setPhase(Phase.AIMING);
+        return true;
+    }
+
+    private static void arrive() {
+        justArrived = true;
+        minedHere = 0;
+        enterSearching("arrived");
+    }
+
+    private static void abandonPath(String reason) {
+        badSpots.put(pathGoal, System.currentTimeMillis() + SKIP_SPOT_MS);
+        skipVein();
+        enterScanning(reason);
+    }
+
+    private static void tickRegenWait(Minecraft client, MiningView view) {
+        releaseAttack(client);
+        MiningTargetSelector.Target found = MiningTargetSelector.select(view,
+                client.player.getEyePosition(), client.player.getViewVector(1.0f), reach(client),
+                allowedKinds(), AetherConfig.MINER_PREFER_TITANIUM.get(), skipUntil.keySet());
+        long waited = System.currentTimeMillis() - phaseStartedAt;
+        if (found != null) {
+            MinerLog.log("ore regenerated after " + waited + "ms: " + found.kind() + " at " + MinerLog.pos(found.pos()));
+            target = found;
+            RotationManager.cancelRotation();
+            RotationManager.initiateRotation(client, found.aim(), 0L);
+            setPhase(Phase.AIMING);
+            return;
+        }
+        if (waited > REGEN_WAIT_MS) {
+            MinerLog.log("nothing regenerated in " + waited + "ms, moving on");
+            minedHere = 0;
+            enterScanning("regen wait over");
         }
     }
 
@@ -469,10 +559,8 @@ public final class BlockMiner {
 
     private static void pruneSkips() {
         long now = System.currentTimeMillis();
-        Iterator<Map.Entry<BlockPos, Long>> it = skipUntil.entrySet().iterator();
-        while (it.hasNext()) {
-            if (it.next().getValue() <= now) it.remove();
-        }
+        skipUntil.values().removeIf(until -> until <= now);
+        badSpots.values().removeIf(until -> until <= now);
     }
 
     private static void releaseAttack(Minecraft client) {
