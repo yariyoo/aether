@@ -778,9 +778,10 @@
   "text.aether.titanium": "Titanium",
   "text.aether.prefer_titanium": "Prefer Titanium",
   "text.aether.behaviour": "Behaviour",
-  "text.aether.how_the_miner_handles_stuck_blocks": "How the miner handles stuck blocks",
-  "text.aether.run_aether_miner_to_start_or_stop_it_mines_blocks_in_reach_without_moving": "Run /aether miner to start or stop. It mines blocks in reach without moving.",
   "text.aether.block_timeout": "Block Timeout",
   "text.aether.mining": "Mining",
-  "text.aether.dwarven_mines": "Dwarven Mines"
+  "text.aether.dwarven_mines": "Dwarven Mines",
+  "text.aether.run_aether_miner_to_start_or_stop_it_mines_what_it_can_reach_then_walks_to_the_nearest_vein": "Run /aether miner to start or stop. It mines what it can reach, then walks to the nearest vein.",
+  "text.aether.how_far_the_miner_looks_and_how_it_handles_stuck_blocks": "How far the miner looks and how it handles stuck blocks",
+  "text.aether.scan_radius": "Scan Radius"
 }

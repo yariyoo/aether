@@ -565,6 +565,7 @@ public final class AetherConfig {
         public static final BooleanEntry MINER_BLUE_MITHRIL = Config.bool("minerBlueMithril", true);
         public static final BooleanEntry MINER_TITANIUM = Config.bool("minerTitanium", true);
         public static final BooleanEntry MINER_PREFER_TITANIUM = Config.bool("minerPreferTitanium", true);
+        public static final IntEntry MINER_SCAN_RADIUS = Config.integer("minerScanRadius", 24).range(8, 48);
         public static final FloatEntry MINER_BLOCK_TIMEOUT_SECONDS = Config
                         .floatVal("minerBlockTimeoutSeconds", 8.0f).range(2.0f, 30.0f);
 
