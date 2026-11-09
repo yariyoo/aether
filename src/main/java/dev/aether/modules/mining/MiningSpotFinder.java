@@ -4,6 +4,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.Set;
+
 public final class MiningSpotFinder {
     private static final double EYE_HEIGHT = 1.62;
     private static final int HORIZONTAL_SEARCH = 4;
@@ -16,13 +18,17 @@ public final class MiningSpotFinder {
 
     // the standing block (feet position) nearest the player from which the target can be seen and reached
     public static BlockPos find(MiningView view, BlockPos target, BlockPos playerFeet, double reach) {
+        return find(view, target, playerFeet, reach, Set.of());
+    }
+
+    public static BlockPos find(MiningView view, BlockPos target, BlockPos playerFeet, double reach, Set<BlockPos> exclude) {
         BlockPos best = null;
         double bestScore = Double.MAX_VALUE;
         for (int dx = -HORIZONTAL_SEARCH; dx <= HORIZONTAL_SEARCH; dx++) {
             for (int dy = -BELOW_SEARCH; dy <= ABOVE_SEARCH; dy++) {
                 for (int dz = -HORIZONTAL_SEARCH; dz <= HORIZONTAL_SEARCH; dz++) {
                     BlockPos feet = target.offset(dx, dy, dz);
-                    if (!isStandable(view, feet) || feet.below().equals(target)) continue;
+                    if (exclude.contains(feet) || !isStandable(view, feet) || feet.below().equals(target)) continue;
                     Vec3 eye = new Vec3(feet.getX() + 0.5, feet.getY() + EYE_HEIGHT, feet.getZ() + 0.5);
                     if (!canMineFrom(view, eye, target, reach - REACH_MARGIN)) continue;
                     double score = Math.sqrt(feet.distSqr(playerFeet));
