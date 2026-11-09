@@ -15,6 +15,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -34,7 +35,7 @@ public final class BlockMiner {
     private static final long SKIP_BLOCK_MS = 15_000L;
     private static final long SKIP_VEIN_MS = 30_000L;
     private static final long NO_VEIN_NOTICE_MS = 5000L;
-    private static final int VERTICAL_SCAN_RADIUS = 12;
+    private static final int CANDIDATE_LIMIT = 4000;
     private static final int MAX_VEINS_TRIED = 5;
     private static final int MAX_BLOCKS_TRIED_PER_VEIN = 12;
     private static final int DIAGNOSTIC_RADIUS = 6;
@@ -60,6 +61,7 @@ public final class BlockMiner {
     private static boolean justArrived;
     private static AtomicInteger pathResult = new AtomicInteger(PATH_PENDING);
     private static final Map<BlockPos, Long> skipUntil = new HashMap<>();
+    private static final MiningBlockIndex index = new MiningBlockIndex();
 
     private BlockMiner() {}
 
@@ -104,9 +106,10 @@ public final class BlockMiner {
         blocksMined = 0;
         skipUntil.clear();
         levelIdentity = System.identityHashCode(client.level);
+        index.reset();
         MinerLog.log("started: allowed " + allowed
                 + ", prefer titanium " + AetherConfig.MINER_PREFER_TITANIUM.get()
-                + ", scan radius " + AetherConfig.MINER_SCAN_RADIUS.get()
+                + ", render distance " + client.options.getEffectiveRenderDistance()
                 + ", reach " + String.format("%.2f", reach(client))
                 + ", tool slot " + FailsafeManager.getCurrentSelectedSlot(client)
                 + " (" + client.player.getMainHandItem().getHoverName().getString() + ")");
@@ -128,6 +131,7 @@ public final class BlockMiner {
         target = null;
         pathVein = List.of();
         skipUntil.clear();
+        index.reset();
         if (client != null) client.execute(() -> releaseAttack(client));
         RotationManager.cancelRotation();
         if (MacroStateManager.getCurrentState() == MacroState.State.MINING) {
@@ -152,6 +156,7 @@ public final class BlockMiner {
             return;
         }
 
+        index.tick(client);
         pruneSkips();
         LiveMiningView view = new LiveMiningView(client.level, client.player);
         switch (phase) {
@@ -243,14 +248,21 @@ public final class BlockMiner {
         lastScanAt = now;
 
         BlockPos feet = client.player.blockPosition();
-        int radius = AetherConfig.MINER_SCAN_RADIUS.get();
+        Set<MiningBlockKind> allowed = allowedKinds();
         long started = System.nanoTime();
-        List<MiningVeins.Vein> veins = MiningVeins.find(view, feet, radius, VERTICAL_SCAN_RADIUS,
-                allowedKinds(), skipUntil.keySet());
-        MinerLog.log(String.format("scan r=%d around %s: %d veins, %d skipped blocks, %.1fms",
-                radius, MinerLog.pos(feet), veins.size(), skipUntil.size(), (System.nanoTime() - started) / 1e6));
+        List<BlockPos> candidates = index.nearest(feet, allowed, skipUntil.keySet(), CANDIDATE_LIMIT);
+        List<BlockPos> live = new ArrayList<>(candidates.size());
+        for (BlockPos pos : candidates) {
+            MiningBlockKind kind = view.kindAt(pos);
+            if (kind != null && allowed.contains(kind)) live.add(pos);
+        }
+        List<MiningVeins.Vein> veins = MiningVeins.group(live, feet);
+        MinerLog.log(String.format("scan from %s: index %d blocks (sweep %s), %d nearest, %d still ore, %d veins, %d skipped, %.1fms",
+                MinerLog.pos(feet), index.blockCount(), index.hasFinishedASweep() ? "done" : index.progress(),
+                candidates.size(), live.size(), veins.size(), skipUntil.size(), (System.nanoTime() - started) / 1e6));
 
         if (veins.isEmpty()) {
+            if (!index.hasFinishedASweep()) return;
             if (noVeinSince == 0L) noVeinSince = now;
             if (!noVeinNoticeSent && now - noVeinSince > NO_VEIN_NOTICE_MS) {
                 ClientUtils.sendMessage("§eNo minable blocks nearby. Waiting for them to regenerate...", false);

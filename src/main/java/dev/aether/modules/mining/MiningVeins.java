@@ -4,6 +4,7 @@ import net.minecraft.core.BlockPos;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -14,24 +15,10 @@ public final class MiningVeins {
 
     private MiningVeins() {}
 
-    // groups touching target blocks (including diagonals) into veins, nearest vein first,
+    // groups touching blocks (including diagonals) into veins, nearest vein first,
     // each vein's blocks ordered nearest first
-    public static List<Vein> find(MiningView view, BlockPos center, int horizontalRadius, int verticalRadius,
-                                  Set<MiningBlockKind> allowed, Set<BlockPos> skip) {
-        Set<BlockPos> targets = new HashSet<>();
-        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
-        for (int dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
-            for (int dy = -verticalRadius; dy <= verticalRadius; dy++) {
-                for (int dz = -horizontalRadius; dz <= horizontalRadius; dz++) {
-                    cursor.set(center.getX() + dx, center.getY() + dy, center.getZ() + dz);
-                    MiningBlockKind kind = view.kindAt(cursor);
-                    if (kind != null && allowed.contains(kind) && !skip.contains(cursor)) {
-                        targets.add(cursor.immutable());
-                    }
-                }
-            }
-        }
-
+    public static List<Vein> group(Collection<BlockPos> positions, BlockPos center) {
+        Set<BlockPos> targets = positions instanceof Set<BlockPos> set ? set : new HashSet<>(positions);
         List<Vein> veins = new ArrayList<>();
         Set<BlockPos> seen = new HashSet<>();
         for (BlockPos start : targets) {

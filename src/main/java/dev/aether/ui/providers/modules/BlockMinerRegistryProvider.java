@@ -26,20 +26,15 @@ public final class BlockMinerRegistryProvider extends AbstractMiningRegistryProv
                 .add(toggle("Titanium", AetherConfig.MINER_TITANIUM))
                 .add(toggle("Prefer Titanium", AetherConfig.MINER_PREFER_TITANIUM));
 
-        SettingGroup behaviour = SettingGroup.alwaysOn("Behaviour", "How far the miner looks and how it handles stuck blocks")
+        SettingGroup behaviour = SettingGroup.alwaysOn("Behaviour", "How the miner handles stuck blocks")
                 .add(new InfoSetting("Trigger",
-                        () -> "Run /aether miner to start or stop. It mines what it can reach, then walks to the nearest vein.")
+                        () -> "Run /aether miner to start or stop. It finds ore anywhere in loaded chunks and walks to the nearest vein.")
                         .multiline())
                 .add(new SliderSetting("Block Timeout", 2, 30,
                         () -> AetherConfig.MINER_BLOCK_TIMEOUT_SECONDS.get(), value -> {
                             AetherConfig.MINER_BLOCK_TIMEOUT_SECONDS.set(Math.round(value * 2) / 2.0f);
                             AetherConfig.save();
-                        }).withDecimals(1).withSuffix("s"))
-                .add(new SliderSetting("Scan Radius", 8, 48,
-                        () -> (float) AetherConfig.MINER_SCAN_RADIUS.get(), value -> {
-                            AetherConfig.MINER_SCAN_RADIUS.set(Math.round(value));
-                            AetherConfig.save();
-                        }).withDecimals(0).withSuffix(" blocks"));
+                        }).withDecimals(1).withSuffix("s"));
 
         return MainGUIRegistry.subTab(
                 "Block Miner",
