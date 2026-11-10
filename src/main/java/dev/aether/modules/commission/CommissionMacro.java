@@ -36,6 +36,10 @@ public final class CommissionMacro {
     private static final long ZONE_LOG_MS = 30_000L;
     // tab progress refreshes about every 3s, so this many blocks with no gain means they are not counting
     private static final long NO_PROGRESS_MS = 20_000L;
+    // server swaps and warps briefly show another location, so only a lasting one means we left the mines
+    private static final long OUTSIDE_MINES_STOP_MS = 15_000L;
+    private static final int MAX_FAILED_CLAIMS = 3;
+    private static final int MAX_TRAVEL_FAILURES_IN_A_ROW = 4;
     private static final int NO_PROGRESS_MIN_MINED = 15;
 
     private enum Step { CHOOSING, TRAVELING, WORKING }
@@ -69,6 +73,8 @@ public final class CommissionMacro {
     private static int minedAtProgress;
     private static long zoneLogAt;
     private static String lastConsidered = "";
+    private static long outsideMinesSince;
+    private static int travelFailuresInARow;
     private static long lastConsideredAt;
     private static final Map<String, Long> skipUntil = new HashMap<>();
 
@@ -146,6 +152,12 @@ public final class CommissionMacro {
             BlockMiner.stopManaged(client);
             enter(Step.CHOOSING, "world changed");
         }
+        String unsafe = unsafeReason(client);
+        if (unsafe != null) {
+            stop(client, unsafe, false);
+            ClientUtils.sendMessage("§cDwarven Commissions stopped: " + unsafe + ".", false);
+            return;
+        }
         if (CommissionClaimer.isBusy()) {
             route.pause(client);
             return;
@@ -159,12 +171,31 @@ public final class CommissionMacro {
         }
     }
 
+    private static String unsafeReason(Minecraft client) {
+        if (client.player.isDeadOrDying() || client.gui.screen() instanceof net.minecraft.client.gui.screens.DeathScreen) {
+            return "you died";
+        }
+        long now = System.currentTimeMillis();
+        if (ClientUtils.getCurrentLocation() != MacroState.Location.DWARVEN_MINES) {
+            if (outsideMinesSince == 0L) outsideMinesSince = now;
+            if (now - outsideMinesSince > OUTSIDE_MINES_STOP_MS) return "left the Dwarven Mines";
+        } else {
+            outsideMinesSince = 0L;
+        }
+        if (CommissionClaimer.failedClaims() >= MAX_FAILED_CLAIMS) return "commissions wouldn't claim " + MAX_FAILED_CLAIMS + " times in a row";
+        if (travelFailuresInARow >= MAX_TRAVEL_FAILURES_IN_A_ROW) return "couldn't reach " + MAX_TRAVEL_FAILURES_IN_A_ROW + " commission areas in a row";
+        return null;
+    }
+
     private static void begin(Minecraft client) {
         if (MacroStateManager.getCurrentState() != MacroState.State.OFF) {
             ClientUtils.sendMessage("§cStop the running macro before starting Dwarven Commissions.", false);
             return;
         }
         running = true;
+        outsideMinesSince = 0L;
+        travelFailuresInARow = 0;
+        CommissionClaimer.resetFailures();
         levelIdentity = System.identityHashCode(client.level);
         skipUntil.clear();
         MacroStateManager.setCurrentState(MacroState.State.COMMISSIONS);
@@ -319,6 +350,22 @@ public final class CommissionMacro {
     }
 
     private static void tickTraveling(Minecraft client) {
+        long reviewNow = System.currentTimeMillis();
+        if (reviewNow - lastReviewAt >= REVIEW_INTERVAL_MS) {
+            lastReviewAt = reviewNow;
+            Commission mine = find(CommissionClaimer.currentCommissions(client), current.commission());
+            // the commission can finish or vanish on the way (another player's raid, a claim elsewhere)
+            if (mine == null || mine.done()) {
+                CommissionLog.log(current.commission() + (mine == null ? " left the tab list" : " is already DONE")
+                        + " while travelling, choosing again");
+                PathfindingManager.stop();
+                route.stop(client);
+                travelToSpot = false;
+                travelAttempts = 0;
+                enter(Step.CHOOSING, "commission changed during travel");
+                return;
+            }
+        }
         if (travelByRoute) {
             tickRoute(client);
             return;
@@ -389,6 +436,7 @@ public final class CommissionMacro {
             return;
         }
         CommissionLog.log("giving up on " + task.commission() + " for now after " + travelAttempts + " attempts");
+        travelFailuresInARow++;
         travelAttempts = 0;
         travelToSpot = false;
         skipUntil.put(task.commission(), now + SKIP_AFTER_FAILURE_MS);
@@ -427,6 +475,7 @@ public final class CommissionMacro {
     }
 
     private static void startWorking(Minecraft client, CommissionTask task) {
+        travelFailuresInARow = 0;
         boolean started = BlockMiner.startManaged(client, task.ores(), task.area());
         if (!started) {
             stop(client, "miner could not start", true);
