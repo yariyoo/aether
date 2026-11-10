@@ -26,7 +26,8 @@ public final class CommissionMacro {
     private static final long TRAVEL_STUCK_MS = 5000L;
     // etherwarp travel can stand still while it lines up the next warp
     private static final long ETHERWARP_STUCK_MS = 10_000L;
-    private static final int MAX_TRAVEL_ATTEMPTS = 3;
+    private static final long ETHERWARP_PLAN_LIMIT_MS = 20_000L;
+    private static final int MAX_TRAVEL_ATTEMPTS = 5;
     private static final double SPOT_ARRIVAL = 2.0;
     private static final long ZONE_LOG_MS = 30_000L;
     // tab progress refreshes about every 3s, so this many blocks with no gain means they are not counting
@@ -54,6 +55,8 @@ public final class CommissionMacro {
     private static int travelAttempts;
     private static boolean travelToSpot;
     private static boolean travelByEtherwarp;
+    private static boolean nextLegWalks;
+    private static boolean planReadyLogged;
     private static double lastProgress;
     private static long lastProgressAt;
     private static int minedAtProgress;
@@ -104,6 +107,7 @@ public final class CommissionMacro {
         BlockMiner.stopManaged(client);
         current = null;
         travelAttempts = 0;
+        nextLegWalks = false;
         skipUntil.clear();
         if (MacroStateManager.getCurrentState() == MacroState.State.COMMISSIONS) {
             MacroStateManager.setCurrentState(MacroState.State.OFF);
@@ -248,7 +252,11 @@ public final class CommissionMacro {
         travelBest = Math.sqrt(client.player.blockPosition().distSqr(goal));
         travelProgressAt = System.currentTimeMillis();
         travelLogAt = travelProgressAt;
-        travelByEtherwarp = GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(client) >= 0;
+        boolean hasEtherwarp = GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(client) >= 0;
+        // after a walk stalls, etherwarp from the stall point; after etherwarp planning runs long, walk instead
+        travelByEtherwarp = hasEtherwarp && !nextLegWalks;
+        nextLegWalks = false;
+        planReadyLogged = false;
         CommissionLog.log(String.format("%s to %s at %s, %.0f blocks (attempt %d)",
                 travelByEtherwarp ? "etherwarping and walking" : "walking (no etherwarp AOTV in hotbar)",
                 task.area().name(), goal.toShortString(), travelBest, travelAttempts + 1));
@@ -279,11 +287,28 @@ public final class CommissionMacro {
             startWorking(client, task);
             return;
         }
+        boolean planning = PathfindingManager.isSearching();
+        if (planning) {
+            // planning time is not being stuck; restart the stall clock once it moves
+            travelProgressAt = now;
+            if (travelByEtherwarp && now - stepStartedAt > ETHERWARP_PLAN_LIMIT_MS) {
+                CommissionLog.log("etherwarp route to " + task.area().name() + " still planning after "
+                        + (now - stepStartedAt) + "ms, walking this leg instead");
+                PathfindingManager.stop();
+                nextLegWalks = true;
+                startTravel(client, task);
+                return;
+            }
+        } else if (!planReadyLogged) {
+            planReadyLogged = true;
+            CommissionLog.log("route ready after " + (now - stepStartedAt) + "ms, moving");
+        }
         if (now - travelLogAt >= TRAVEL_LOG_MS) {
             travelLogAt = now;
-            CommissionLog.log(String.format("walking: at %s, %.0f blocks to %s (best %.0f), pathfinder %s, %dms in",
-                    feet.toShortString(), remaining, task.area().name(), travelBest,
-                    PathfindingManager.isNavigating() ? "navigating" : "idle", now - stepStartedAt));
+            CommissionLog.log(String.format("%s: at %s, %.0f blocks to %s (best %.0f), pathfinder %s, %dms in",
+                    travelByEtherwarp ? "etherwarp" : "walking", feet.toShortString(), remaining, task.area().name(),
+                    travelBest, planning ? "planning" : PathfindingManager.isNavigating() ? "moving" : "idle",
+                    now - stepStartedAt));
         }
         if (remaining <= travelBest - 1.0) {
             travelBest = remaining;
@@ -303,6 +328,11 @@ public final class CommissionMacro {
                 ? "etherwarp" : "walk", task.area().name(), feet.toShortString(), problem, remaining));
         CommissionLog.log("  around the player: " + describeSurroundings(client));
         if (travelAttempts < MAX_TRAVEL_ATTEMPTS) {
+            if (!travelByEtherwarp && GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(client) >= 0) {
+                CommissionLog.log("trying etherwarp from here, past where walking stalled");
+            } else if (travelByEtherwarp) {
+                nextLegWalks = true;
+            }
             startTravel(client, task);
             return;
         }
