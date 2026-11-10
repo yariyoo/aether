@@ -50,7 +50,7 @@ public final class MiningSpotMemory {
         double bestScore = 0;
         for (Spot s : spots) {
             if (area != null && !area.contains(s.pos)) continue;
-            if (avoid.contains(s.pos) || now < s.ignoredUntil || now - s.emptyAt < RECHECK_MS) continue;
+            if (avoid.contains(s.pos) || now < s.ignoredUntil || s.emptyAt > 0 && now - s.emptyAt < RECHECK_MS) continue;
             double distance = Math.sqrt(s.pos.distSqr(feet));
             if (distance < MIN_DISTANCE) continue;
             double score = Math.log1p(s.mined) / (1.0 + distance / DISTANCE_SCALE);
