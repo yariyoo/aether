@@ -23,11 +23,18 @@ public final class MiningSpotPlanner {
 
     public static List<Plan> rank(MiningView view, List<MiningVeins.Vein> veins, List<BlockPos> ore,
                                   BlockPos feet, double reach, Set<BlockPos> badSpots, int maxVeins) {
+        return rank(view, veins, ore, feet, reach, badSpots, null, maxVeins);
+    }
+
+    // standArea, when set, is the only place the player may stand
+    public static List<Plan> rank(MiningView view, List<MiningVeins.Vein> veins, List<BlockPos> ore,
+                                  BlockPos feet, double reach, Set<BlockPos> badSpots, MiningArea standArea, int maxVeins) {
         List<Plan> plans = new ArrayList<>();
         for (int v = 0; v < Math.min(maxVeins, veins.size()); v++) {
             List<BlockPos> blocks = veins.get(v).blocks();
             for (int b = 0; b < Math.min(BLOCKS_TRIED_PER_VEIN, blocks.size()); b++) {
-                BlockPos spot = MiningSpotFinder.find(view, blocks.get(b), feet, reach, badSpots);
+                BlockPos spot = MiningSpotFinder.find(view, blocks.get(b), feet, reach,
+                        pos -> !badSpots.contains(pos) && (standArea == null || standArea.contains(pos)));
                 if (spot == null) continue;
                 int reachable = reachableFrom(view, spot, ore, reach);
                 double distance = Math.sqrt(spot.distSqr(feet));

@@ -11,12 +11,21 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.HashSet;
 import java.util.Set;
 
 final class LiveMiningView implements MiningView {
-    private static final Set<Block> NATURAL_HOSTS = Set.of(
-            Blocks.STONE, Blocks.COBBLESTONE, Blocks.ANDESITE, Blocks.DIORITE, Blocks.GRANITE,
-            Blocks.GRAVEL, Blocks.BEDROCK);
+    // the dwarven mines carve veins out of terracotta and polished stone as much as plain stone
+    private static final Set<Block> NATURAL_HOSTS = naturalHosts();
+
+    private static Set<Block> naturalHosts() {
+        Set<Block> hosts = new HashSet<>(Set.of(
+                Blocks.STONE, Blocks.COBBLESTONE, Blocks.ANDESITE, Blocks.DIORITE, Blocks.GRANITE,
+                Blocks.POLISHED_ANDESITE, Blocks.POLISHED_GRANITE, Blocks.GRAVEL, Blocks.BEDROCK,
+                Blocks.CLAY, Blocks.TERRACOTTA));
+        hosts.addAll(Blocks.DYED_TERRACOTTA.asList());
+        return Set.copyOf(hosts);
+    }
 
     private final ClientLevel level;
     private final Entity viewer;

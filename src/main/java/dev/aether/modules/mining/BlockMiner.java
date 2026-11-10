@@ -50,6 +50,7 @@ public final class BlockMiner {
     private static final long REGEN_WAIT_MS = 8000L;
     // spots scoring within this share of the best are treated as equal and picked between at random
     private static final double TIE_SHARE = 0.9;
+    private static final double CONTINUE_VEIN_SHARE = 0.4;
     private static final long NO_VEIN_NOTICE_MS = 5000L;
     private static final int CANDIDATE_LIMIT = 4000;
     private static final int MAX_VEINS_RANKED = 16;
@@ -78,6 +79,7 @@ public final class BlockMiner {
     private static long lastProgressAt;
     private static int pathTicks;
     private static int minedHere;
+    private static BlockPos lastMined;
     private static int timeoutsHere;
     private static long lastMiningLogAt;
     private static final Map<BlockPos, Long> badSpots = new HashMap<>();
@@ -88,8 +90,9 @@ public final class BlockMiner {
     private static final Map<BlockPos, Long> skipUntil = new HashMap<>();
     private static final MiningBlockIndex index = new MiningBlockIndex();
     private static Set<MiningBlockKind> kindsOverride;
-    private static BlockPos anchor;
-    private static int anchorRadius;
+    private static MiningArea area;
+    private static final long SKIP_UNBREAKABLE_MS = 600_000L;
+    private static final int UNBREAKABLE_RADIUS = 2;
 
     private BlockMiner() {}
 
@@ -110,7 +113,7 @@ public final class BlockMiner {
     }
 
     // started by another macro: it owns the macro state, picks the ores and keeps the miner inside an area
-    public static boolean startManaged(Minecraft client, Set<MiningBlockKind> kinds, BlockPos areaAnchor, int radius) {
+    public static boolean startManaged(Minecraft client, Set<MiningBlockKind> kinds, MiningArea standArea) {
         if (client.player == null || client.level == null) return false;
         if (enabled) stop(client, false, "restarting for a new target");
         if (!selectMiningTool(client)) {
@@ -119,10 +122,9 @@ public final class BlockMiner {
             return false;
         }
         kindsOverride = Set.copyOf(kinds);
-        anchor = areaAnchor;
-        anchorRadius = radius;
-        beginRun(client, "managed: kinds " + kinds + ", area " + (areaAnchor == null ? "anywhere"
-                : MinerLog.pos(areaAnchor) + " r=" + radius));
+        area = standArea;
+        beginRun(client, "managed: kinds " + kinds + ", area " + (standArea == null ? "anywhere"
+                : standArea.name() + " " + MinerLog.pos(standArea.min()) + " to " + MinerLog.pos(standArea.max())));
         return true;
     }
 
@@ -151,7 +153,7 @@ public final class BlockMiner {
             return;
         }
         kindsOverride = null;
-        anchor = null;
+        area = null;
         beginRun(client, "manual");
         MacroStateManager.setCurrentState(MacroState.State.MINING);
         ClientUtils.sendMessage("§aBlock miner started.", false);
@@ -162,6 +164,7 @@ public final class BlockMiner {
         enabled = true;
         blocksMined = 0;
         minedHere = 0;
+        lastMined = null;
         skipUntil.clear();
         badSpots.clear();
         levelIdentity = System.identityHashCode(client.level);
@@ -195,7 +198,7 @@ public final class BlockMiner {
             MacroStateManager.setCurrentState(MacroState.State.OFF);
         }
         kindsOverride = null;
-        anchor = null;
+        area = null;
         if (announce) {
             ClientUtils.sendMessage("§eBlock miner stopped. Mined " + blocksMined + " blocks.", false);
         }
@@ -291,6 +294,7 @@ public final class BlockMiner {
         if (!MiningTargetSelector.isStillMineable(view, target, allowedKinds())) {
             blocksMined++;
             minedHere++;
+            lastMined = target.pos();
             timeoutsHere = 0;
             MinerLog.log("mined " + target.kind() + " at " + MinerLog.pos(target.pos()) + " in "
                     + (System.currentTimeMillis() - phaseStartedAt) + "ms, now "
@@ -310,6 +314,15 @@ public final class BlockMiner {
             MinerLog.log("gave up on " + MinerLog.pos(target.pos()) + " after " + timeoutMs + "ms ("
                     + timeoutsHere + " in a row here), " + miningState(client));
             skip(target.pos(), SKIP_BLOCK_MS);
+            if (area == null) {
+                // outside commission areas a block that never breaks is usually decoration, so its neighbours are too
+                BlockPos centre = target.pos();
+                for (BlockPos pos : BlockPos.betweenClosed(centre.offset(-UNBREAKABLE_RADIUS, -UNBREAKABLE_RADIUS, -UNBREAKABLE_RADIUS),
+                        centre.offset(UNBREAKABLE_RADIUS, UNBREAKABLE_RADIUS, UNBREAKABLE_RADIUS))) {
+                    skip(pos.immutable(), SKIP_UNBREAKABLE_MS);
+                }
+                MinerLog.log("avoiding blocks around " + MinerLog.pos(centre) + " for " + SKIP_UNBREAKABLE_MS / 1000 + "s");
+            }
             if (timeoutsHere >= TIMEOUTS_BEFORE_LEAVING_SPOT) {
                 MinerLog.log("blocks here are not breaking, leaving " + MinerLog.pos(client.player.blockPosition()));
                 badSpots.put(client.player.blockPosition(), now + SKIP_SPOT_MS);
@@ -344,9 +357,9 @@ public final class BlockMiner {
         long started = System.nanoTime();
         List<BlockPos> candidates = index.nearest(feet, allowed, skipUntil.keySet(), CANDIDATE_LIMIT);
         List<BlockPos> live = new ArrayList<>(candidates.size());
-        long anchorLimit = (long) anchorRadius * anchorRadius;
+        double reachLimit = reach(client) + 1.0;
         for (BlockPos pos : candidates) {
-            if (anchor != null && pos.distSqr(anchor) > anchorLimit) continue;
+            if (area != null && area.distanceTo(pos) > reachLimit) continue;
             MiningBlockKind kind = view.kindAt(pos);
             if (kind != null && allowed.contains(kind)) live.add(pos);
         }
@@ -370,6 +383,11 @@ public final class BlockMiner {
         List<MiningVeins.Vein> natural = new ArrayList<>();
         for (int v = 0; v < veins.size() && natural.size() < MAX_VEINS_RANKED; v++) {
             List<BlockPos> blocks = veins.get(v).blocks();
+            // commission areas are mining zones, so only free mining has to guess what is decoration
+            if (area != null) {
+                natural.add(veins.get(v));
+                continue;
+            }
             MiningVeinFilter.Surroundings around = MiningVeinFilter.inspect(view, blocks);
             if (around.looksNatural()) {
                 natural.add(veins.get(v));
@@ -381,7 +399,7 @@ public final class BlockMiner {
         }
         long planStarted = System.nanoTime();
         List<MiningSpotPlanner.Plan> plans = MiningSpotPlanner.rank(view, natural, live, feet, reach,
-                badSpots.keySet(), MAX_VEINS_RANKED);
+                badSpots.keySet(), area, MAX_VEINS_RANKED);
         MinerLog.log(String.format("ranked %d spots from %d veins in %.1fms", plans.size(), natural.size(),
                 (System.nanoTime() - planStarted) / 1e6));
         for (int i = 0; i < Math.min(3, plans.size()); i++) {
@@ -396,7 +414,13 @@ public final class BlockMiner {
             }
             return;
         }
-        MiningSpotPlanner.Plan chosen = pickAmongBest(plans);
+        MiningSpotPlanner.Plan chosen = continueVein(plans);
+        if (chosen != null) {
+            MinerLog.log("staying on the current vein: spot " + MinerLog.pos(chosen.spot()) + " reaches "
+                    + chosen.reachable() + " more of it");
+        } else {
+            chosen = pickAmongBest(plans);
+        }
         fallbackPlans = new ArrayList<>(plans.subList(0, Math.min(MAX_PLANS_KEPT, plans.size())));
         fallbackPlans.remove(chosen);
         MinerLog.log("chose spot " + MinerLog.pos(chosen.spot()) + " (" + chosen.reachable() + " ore in reach)");
@@ -418,6 +442,19 @@ public final class BlockMiner {
             return true;
         }
         return false;
+    }
+
+    // finish the vein being mined before walking off to another, as long as it is still worth it
+    private static MiningSpotPlanner.Plan continueVein(List<MiningSpotPlanner.Plan> plans) {
+        if (lastMined == null) return null;
+        double best = plans.getFirst().score();
+        for (MiningSpotPlanner.Plan plan : plans) {
+            if (plan.score() < best * CONTINUE_VEIN_SHARE) break;
+            for (BlockPos pos : plan.vein()) {
+                if (pos.distSqr(lastMined) <= 4) return plan;
+            }
+        }
+        return null;
     }
 
     private static MiningSpotPlanner.Plan pickAmongBest(List<MiningSpotPlanner.Plan> plans) {
@@ -502,7 +539,9 @@ public final class BlockMiner {
         MiningTargetSelector.Target found = MiningTargetSelector.select(view,
                 client.player.getEyePosition(), client.player.getViewVector(1.0f), reach(client),
                 allowedKinds(), AetherConfig.MINER_PREFER_TITANIUM.get(), skipUntil.keySet());
-        if (found == null || !MiningVeinFilter.inspect(view, List.of(found.pos())).looksNatural()) return false;
+        if (found == null) return false;
+        if (area != null && !area.contains(client.player.blockPosition())) return false;
+        if (area == null && !MiningVeinFilter.inspect(view, List.of(found.pos())).looksNatural()) return false;
         MinerLog.log("ore came into reach while walking: " + found.kind() + " at " + MinerLog.pos(found.pos())
                 + ", stopping to mine it");
         PathfindingManager.stop();
