@@ -10,7 +10,7 @@ import java.util.Set;
 
 // what a commission asks for, and where it has to be done
 public record CommissionTask(String commission, Kind kind, Set<MiningBlockKind> ores, Area area) {
-    public enum Kind { MINING, COMBAT, EVENT, UNKNOWN }
+    public enum Kind { MINING, COMBAT, EVENT, IGNORED, UNKNOWN }
 
     // anchors are the spots a working macro mined each area from; the radius keeps mining inside the area
     public record Area(String name, BlockPos anchor, int radius) {}
@@ -32,7 +32,11 @@ public record CommissionTask(String commission, Kind kind, Set<MiningBlockKind> 
 
     public static CommissionTask of(String name) {
         String lower = name.toLowerCase(Locale.ROOT).strip();
-        if (lower.equals("mithril miner") || lower.endsWith("mithril powder collector")) {
+        // powder collector only progresses during 2x powder, raffle is its own project for later
+        if (lower.endsWith("mithril powder collector") || lower.equals("raffle")) {
+            return new CommissionTask(name, Kind.IGNORED, Set.of(), null);
+        }
+        if (lower.equals("mithril miner")) {
             return new CommissionTask(name, Kind.MINING, MITHRIL, null);
         }
         if (lower.equals("titanium miner")) {

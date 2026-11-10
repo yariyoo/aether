@@ -155,6 +155,10 @@ public final class CommissionMacro {
         for (Commission c : commissions) {
             CommissionTask task = CommissionTask.of(c.name());
             String status = c.name() + " " + Math.round(c.progress() * 100) + "% " + task.kind();
+            if (task.kind() == CommissionTask.Kind.IGNORED) {
+                considered.append(status).append(" (ignored); ");
+                continue;
+            }
             if (!task.isMining()) {
                 unsupported = true;
                 considered.append(status).append(" (not supported yet); ");

@@ -11,6 +11,8 @@ the maintainer directly and win over anything observed.
 - **spec** Event commissions (Goblin Raid Slayer, ...) are never prioritised and never hunted for. Do them only
   when the event is happening where the macro already is: if it runs into a Goblin Raid, it takes part.
   Whether Star Sentry Puncher counts as an event commission is not confirmed yet.
+- **spec** Ignore 2x Mithril Powder Collector completely: it only progresses during 2x powder.
+- **spec** Ignore Raffle for now; it gets its own work later.
 - **spec** Pick the commission that is fastest to reach. Working on two at once only happens by luck when a
   new commission lands near the current one; do not aim for it.
 - **spec** Claim with the Royal Pigeon. Find it by name in the hotbar, never assume a slot.

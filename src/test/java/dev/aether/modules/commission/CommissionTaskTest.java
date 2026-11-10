@@ -25,7 +25,7 @@ class CommissionTaskTest {
     void generalMiningCommissionsWorkAnywhere() {
         assertNull(CommissionTask.of("Mithril Miner").area());
         assertNull(CommissionTask.of("Titanium Miner").area());
-        assertTrue(CommissionTask.of("2x Mithril Powder Collector").isMining());
+        assertTrue(CommissionTask.of("Mithril Miner").isMining());
     }
 
     @Test
@@ -35,5 +35,11 @@ class CommissionTaskTest {
         assertEquals(CommissionTask.Kind.COMBAT, CommissionTask.of("Treasure Hoarder Puncher").kind());
         assertEquals(CommissionTask.Kind.EVENT, CommissionTask.of("Goblin Raid Slayer").kind());
         assertEquals(CommissionTask.Kind.UNKNOWN, CommissionTask.of("Something New").kind());
+    }
+
+    @Test
+    void ignoresPowderCollectorAndRaffle() {
+        assertEquals(CommissionTask.Kind.IGNORED, CommissionTask.of("2x Mithril Powder Collector").kind());
+        assertEquals(CommissionTask.Kind.IGNORED, CommissionTask.of("Raffle").kind());
     }
 }
