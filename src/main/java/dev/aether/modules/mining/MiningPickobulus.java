@@ -29,15 +29,25 @@ public final class MiningPickobulus {
         double radiusSqr = BLAST_RADIUS * BLAST_RADIUS;
         double reachSqr = reach * reach;
         Blast best = null;
+        double bestSpread = 0;
         for (BlockPos pos : ore) {
             if (Vec3.atCenterOf(pos).distanceToSqr(eye) > reachSqr) continue;
             int count = 0;
+            double spread = 0;
             for (BlockPos other : ore) {
-                if (other.distSqr(pos) <= radiusSqr) count++;
+                double d = other.distSqr(pos);
+                if (d <= radiusSqr) {
+                    count++;
+                    spread += d;
+                }
             }
-            if (best != null && count <= best.ore()) continue;
+            // on a tie the more central block keeps more of the patch inside the blast
+            if (best != null && (count < best.ore() || count == best.ore() && spread >= bestSpread)) continue;
             Vec3 aim = visiblePoint(view, eye, pos);
-            if (aim != null) best = new Blast(pos, aim, count);
+            if (aim != null) {
+                best = new Blast(pos, aim, count);
+                bestSpread = spread;
+            }
         }
         return best;
     }
