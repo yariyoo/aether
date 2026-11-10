@@ -42,7 +42,7 @@ public final class GameplayRecorder {
     private static final DateTimeFormatter FILE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
     private static final int FLUSH_EVERY_TICKS = 20;
     private static final int TAB_CHECK_EVERY_TICKS = 10;
-    private static final int MAX_LORE_LINES = 12;
+    private static final int MAX_LORE_LINES = 40;
     private static final double NAMETAG_RADIUS = 3.0;
 
     private static BufferedWriter writer;
@@ -309,6 +309,12 @@ public final class GameplayRecorder {
             item = screen.getMenu().slots.get(slot).getItem().getHoverName().getString();
         }
         event("click", "container=" + containerId + " slot=" + slot + " button=" + button + " type=" + input + " item=" + item);
+    }
+
+    public static void onUseItem(Minecraft client, String target) {
+        if (writer == null || client.player == null) return;
+        event("use", client.player.getMainHandItem().getHoverName().getString() + " on " + target
+                + String.format(Locale.ROOT, " looking %.1f/%.1f", client.player.getYRot(), client.player.getXRot()));
     }
 
     public static void onEntityInteract(Entity entity, boolean attack) {

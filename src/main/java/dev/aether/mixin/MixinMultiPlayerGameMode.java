@@ -4,6 +4,8 @@ import dev.aether.bootstrap.AetherBootstrapHooks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
 import net.minecraft.core.BlockPos;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -40,6 +42,18 @@ public class MixinMultiPlayerGameMode {
     private void onInteract(Player player, Entity entity, EntityHitResult hit, InteractionHand hand,
                             CallbackInfoReturnable<InteractionResult> cir) {
         AetherBootstrapHooks.onEntityInteract(entity, false);
+    }
+
+    @Inject(method = "useItem", at = @At("HEAD"))
+    private void onUseItem(Player player, InteractionHand hand, CallbackInfoReturnable<InteractionResult> cir) {
+        AetherBootstrapHooks.onUseItem(Minecraft.getInstance(), "air (" + hand + ")");
+    }
+
+    @Inject(method = "useItemOn", at = @At("HEAD"))
+    private void onUseItemOn(LocalPlayer player, InteractionHand hand, BlockHitResult hit,
+                             CallbackInfoReturnable<InteractionResult> cir) {
+        AetherBootstrapHooks.onUseItem(Minecraft.getInstance(),
+                "block " + hit.getBlockPos().toShortString() + " (" + hand + ")");
     }
 
     @Inject(method = "attack", at = @At("HEAD"))

@@ -345,6 +345,11 @@ public final class LiveAetherBootstrapHooks implements AetherBootstrapHooks.Feat
     }
 
     @Override
+    public void onUseItem(Minecraft minecraft, String target) {
+        GameplayRecorder.onUseItem(minecraft, target);
+    }
+
+    @Override
     public void onBlockChanged(Minecraft minecraft, net.minecraft.core.BlockPos pos,
                                net.minecraft.world.level.block.state.BlockState oldState,
                                net.minecraft.world.level.block.state.BlockState newState) {

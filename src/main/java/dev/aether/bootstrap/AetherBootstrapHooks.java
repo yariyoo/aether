@@ -174,6 +174,9 @@ public final class AetherBootstrapHooks {
         default void onEntityInteract(net.minecraft.world.entity.Entity entity, boolean attack) {
         }
 
+        default void onUseItem(Minecraft minecraft, String target) {
+        }
+
         default void onBlockChanged(Minecraft minecraft, BlockPos pos, BlockState oldState, BlockState newState) {
         }
 
@@ -443,6 +446,10 @@ public final class AetherBootstrapHooks {
 
     public static void onEntityInteract(net.minecraft.world.entity.Entity entity, boolean attack) {
         hooks.onEntityInteract(entity, attack);
+    }
+
+    public static void onUseItem(Minecraft minecraft, String target) {
+        hooks.onUseItem(minecraft, target);
     }
 
     public static void onBlockChanged(Minecraft minecraft, BlockPos pos, BlockState oldState, BlockState newState) {
