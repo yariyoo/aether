@@ -37,6 +37,10 @@ public final class CommissionClaimer {
     private static int restoreSlotNextTick = -1;
     private static boolean requested;
     private static int claimedThisRun;
+    private static final java.util.Map<Integer, Integer> clicksPerSlot = new java.util.HashMap<>();
+    // a slot still showing claimable after this many clicks isn't taking them
+    private static final int MAX_CLICKS_PER_SLOT = 2;
+    private static int failedClaims;
     private static int ticks;
 
     private CommissionClaimer() {}
@@ -95,6 +99,7 @@ public final class CommissionClaimer {
         lastAttemptAt = System.currentTimeMillis();
         int pigeon = GearManager.findHotbarItemSlot(client, PIGEON);
         if (pigeon < 0) {
+            failedClaims++;
             CommissionLog.log("no Royal Pigeon in the hotbar, cannot claim");
             ClientUtils.sendMessage("§cNo Royal Pigeon in your hotbar to claim commissions with.", false);
             return;
@@ -119,6 +124,7 @@ public final class CommissionClaimer {
         if (System.currentTimeMillis() - stepStartedAt > MENU_TIMEOUT_MS) {
             CommissionLog.log("Commissions menu did not open within " + MENU_TIMEOUT_MS + "ms, screen is "
                     + describeScreen(client));
+            failedClaims++;
             finish(client, "menu timeout");
         }
     }
@@ -135,8 +141,24 @@ public final class CommissionClaimer {
         if (now - lastClickAt < CLICK_SETTLE_MS) return;
 
         List<CommissionParser.MenuSlot> slots = readMenu(screen);
-        List<CommissionParser.MenuSlot> ready = CommissionParser.claimable(slots);
+        List<CommissionParser.MenuSlot> ready = new ArrayList<>(CommissionParser.claimable(slots));
+        for (CommissionParser.MenuSlot s : List.copyOf(ready)) {
+            int clicks = clicksPerSlot.getOrDefault(s.slot(), 0);
+            if (clicks == 0) continue;
+            if (clicks >= MAX_CLICKS_PER_SLOT) {
+                ready.remove(s);
+                continue;
+            }
+            CommissionLog.log("slot " + s.slot() + " (" + commissionTitle(s) + ") still claimable after a click, trying again");
+        }
         if (ready.isEmpty()) {
+            int unconfirmed = (int) CommissionParser.claimable(slots).size();
+            if (unconfirmed > 0) {
+                failedClaims++;
+                CommissionLog.log(unconfirmed + " commission(s) wouldn't claim after " + MAX_CLICKS_PER_SLOT + " clicks each");
+            } else if (claimedThisRun > 0) {
+                failedClaims = 0;
+            }
             CommissionLog.log("nothing left to claim (" + claimedThisRun + " claimed), closing the menu");
             client.player.closeContainer();
             setStep(Step.CLOSING);
@@ -146,14 +168,25 @@ public final class CommissionClaimer {
         CommissionLog.log("claiming " + slot.name() + " (" + commissionTitle(slot) + ") in slot " + slot.slot());
         client.gameMode.handleContainerInput(screen.getMenu().containerId, slot.slot(), 1, ContainerInput.PICKUP,
                 client.player);
-        claimedThisRun++;
+        clicksPerSlot.merge(slot.slot(), 1, Integer::sum);
+        if (clicksPerSlot.get(slot.slot()) == 1) claimedThisRun++;
         lastClickAt = now;
     }
 
     private static void finish(Minecraft client, String reason) {
         CommissionLog.log("claim finished (" + reason + "), claimed " + claimedThisRun);
         claimedThisRun = 0;
+        clicksPerSlot.clear();
         setStep(Step.IDLE);
+    }
+
+    // claim runs in a row that ended with something still unclaimed, so the macro can stop instead of looping
+    public static int failedClaims() {
+        return failedClaims;
+    }
+
+    public static void resetFailures() {
+        failedClaims = 0;
     }
 
     private static List<CommissionParser.MenuSlot> readMenu(AbstractContainerScreen<?> screen) {
@@ -175,7 +208,11 @@ public final class CommissionClaimer {
     private static String commissionTitle(CommissionParser.MenuSlot slot) {
         List<String> lore = slot.lore();
         for (int i = 0; i + 1 < lore.size(); i++) {
-            if (lore.get(i).strip().equals("rewards.")) return lore.get(i + 1).strip();
+            if (!lore.get(i).strip().equals("rewards.")) continue;
+            // a blank spacer line usually sits between the description and the name
+            for (int j = i + 1; j < lore.size(); j++) {
+                if (!lore.get(j).isBlank()) return lore.get(j).strip();
+            }
         }
         return "?";
     }
