@@ -56,6 +56,7 @@ public final class CommissionClaimer {
 
     public static void onChat(String plain) {
         String finished = CommissionParser.completedFromChat(plain);
+        if (finished != null && CommissionMacro.isRunning()) CommissionMacro.onCompleted();
         if (finished != null && (AetherConfig.COMMISSION_AUTO_CLAIM.get() || CommissionMacro.isRunning())) {
             requestClaim("chat says " + finished + " is complete");
         }

@@ -72,6 +72,7 @@ public final class BlockMiner {
     private static boolean noVeinNoticeSent;
     private static int levelIdentity;
     private static int blocksMined;
+    private static long totalMined;
     private static List<BlockPos> pathVein = List.of();
     private static BlockPos pathGoal;
     private static BlockPos pathFor;
@@ -119,6 +120,11 @@ public final class BlockMiner {
 
     public static int getBlocksMined() {
         return blocksMined;
+    }
+
+    // never reset between runs, so a macro that restarts the miner can still count a whole session
+    public static long getTotalMined() {
+        return totalMined;
     }
 
     public static void toggle(Minecraft client) {
@@ -327,6 +333,7 @@ public final class BlockMiner {
     private static void tickMining(Minecraft client, MiningView view) {
         if (!MiningTargetSelector.isStillMineable(view, target, allowedKinds())) {
             blocksMined++;
+            totalMined++;
             minedHere++;
             lastMined = target.pos();
             timeoutsHere = 0;
@@ -677,6 +684,7 @@ public final class BlockMiner {
             if (PickobulusTracker.usedAt() >= phaseStartedAt) {
                 MinerLog.log("pickobulus went off after " + (now - phaseStartedAt) + "ms");
                 minedHere += blast.ore();
+                totalMined += blast.ore();
                 enterSearching("pickobulus thrown");
             } else if (now - phaseStartedAt > PICKOBULUS_CONFIRM_MS) {
                 MinerLog.log("pickobulus didn't fire (no chat line), not trying again for " + PICKOBULUS_BACKOFF_MS / 1000 + "s");

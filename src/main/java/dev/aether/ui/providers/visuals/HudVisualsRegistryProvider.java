@@ -125,6 +125,16 @@ public final class HudVisualsRegistryProvider extends AbstractVisualsRegistryPro
                 .add(new ActionSetting("Reset Scoreboard Layout", ScoreboardHudElement::resetLayout)));
 
         groups.add(SettingGroup.alwaysOn(
+                        "Commission HUD",
+                        "Session stats while Dwarven Commissions runs")
+                .add(new ToggleSetting("Commission HUD",
+                        () -> AetherConfig.SHOW_COMMISSION_HUD.get(),
+                        v -> {
+                            AetherConfig.SHOW_COMMISSION_HUD.set(v);
+                            AetherConfig.save();
+                        })));
+
+        groups.add(SettingGroup.alwaysOn(
                         "Inventory HUD",
                         "Configure the inventory preview overlay")
                 .add(new ToggleSetting("Inventory HUD",

@@ -731,6 +731,10 @@ public final class AetherConfig {
         public static final IntEntry HUD_Y = Config.integer("hudY", 360);
         public static final FloatEntry HUD_SCALE = Config.floatVal("hudScale", 1.0f).range(0.5f, 3.0f);
         public static final BooleanEntry SHOW_HUD = Config.bool("showHud", false);
+        public static final BooleanEntry SHOW_COMMISSION_HUD = Config.bool("showCommissionHud", true);
+        public static final IntEntry COMMISSION_HUD_X = Config.integer("commissionHudX", 10);
+        public static final IntEntry COMMISSION_HUD_Y = Config.integer("commissionHudY", 60);
+        public static final FloatEntry COMMISSION_HUD_SCALE = Config.floatVal("commissionHudScale", 1.0f).range(0.5f, 3.0f);
         public static final BooleanEntry SHOW_HUD_OUTSIDE_GARDEN = Config.bool("showHudOutsideGarden", false);
 
         public static final IntEntry SESSION_PROFIT_HUD_X = Config.integer("sessionProfitHudX", 10);

@@ -74,6 +74,9 @@ public final class CommissionMacro {
     private static long zoneLogAt;
     private static String lastConsidered = "";
     private static long outsideMinesSince;
+    private static long sessionStartedAt;
+    private static long minedAtStart;
+    private static int completedThisSession;
     private static int travelFailuresInARow;
     private static long lastConsideredAt;
     private static final Map<String, Long> skipUntil = new HashMap<>();
@@ -171,6 +174,46 @@ public final class CommissionMacro {
         }
     }
 
+    static void onCompleted() {
+        completedThisSession++;
+    }
+
+    public static String hudStatus() {
+        if (pendingStart) return "starting";
+        if (!running) return "off";
+        if (CommissionClaimer.isBusy()) return "claiming";
+        return switch (step) {
+            case CHOOSING -> "choosing";
+            case TRAVELING -> travelByRoute ? "travelling (route)" : "travelling (pathfinder)";
+            case WORKING -> "mining";
+        };
+    }
+
+    public static String hudCommission() {
+        return current == null ? "-" : current.commission();
+    }
+
+    public static double hudProgress() {
+        return current == null ? -1 : lastProgress;
+    }
+
+    public static String hudArea() {
+        if (current == null) return "-";
+        return current.area() == null ? "anywhere" : current.area().name();
+    }
+
+    public static long sessionMs() {
+        return running ? System.currentTimeMillis() - sessionStartedAt : 0L;
+    }
+
+    public static int completedThisSession() {
+        return completedThisSession;
+    }
+
+    public static long minedThisSession() {
+        return running ? BlockMiner.getTotalMined() - minedAtStart : 0L;
+    }
+
     private static String unsafeReason(Minecraft client) {
         if (client.player.isDeadOrDying() || client.gui.screen() instanceof net.minecraft.client.gui.screens.DeathScreen) {
             return "you died";
@@ -193,6 +236,9 @@ public final class CommissionMacro {
             return;
         }
         running = true;
+        sessionStartedAt = System.currentTimeMillis();
+        minedAtStart = BlockMiner.getTotalMined();
+        completedThisSession = 0;
         outsideMinesSince = 0L;
         travelFailuresInARow = 0;
         CommissionClaimer.resetFailures();
@@ -287,6 +333,8 @@ public final class CommissionMacro {
             return;
         }
         current = best;
+        Commission chosen = find(commissions, best.commission());
+        lastProgress = chosen == null ? 0.0 : chosen.progress();
         CommissionLog.log("chose " + best.commission() + (best.area() == null ? " (anywhere)"
                 : String.format(" in %s, about %.0fs away", best.area().name(), bestDistance)));
 

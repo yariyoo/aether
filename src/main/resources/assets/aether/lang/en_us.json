@@ -779,6 +779,8 @@
   "text.aether.prefer_titanium": "Prefer Titanium",
   "text.aether.behaviour": "Behaviour",
   "text.aether.block_timeout": "Block Timeout",
+  "text.aether.commission_hud": "Commission HUD",
+  "text.aether.session_stats_while_dwarven_commissions_runs": "Session stats while Dwarven Commissions runs",
   "text.aether.technique": "Technique",
   "text.aether.how_the_miner_works_a_vein": "How the miner works a vein",
   "text.aether.sneak_while_mining": "Sneak While Mining",
