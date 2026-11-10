@@ -27,6 +27,34 @@ the maintainer directly and win over anything observed.
 - **spec** `/warp forge` when it is the fastest way to the next commission.
 - **spec** Optional setting (default on, matching the maintainer's setup): after a Goblin Slayer or Glacite
   Walker Slayer commission, warp to the forge before the next commission, unless the next one is also a slayer.
+- **spec** Area commissions only need the commission to show DONE before claiming; the amount needed scales with
+  fortune, so never count blocks toward it.
+- **spec** Titanium commissions mine mithril while no titanium is in reach, since mined mithril can turn into
+  titanium; titanium in reach is always taken first.
+
+## How it is built
+
+- Travel follows a route graph built from recordings (`tools/build_dwarven_routes.py` writes
+  `assets/aether/routes/dwarven_mines.json`): recorded walks, AOTV hops, etherwarps and `/warp forge`. The planner
+  only uses the moves the player's gear allows. Each hop is aimed from where the player stands and checked on
+  landing. A step that fails is banned for five minutes and the route is replanned. If no recorded route fits,
+  travel falls back to the pathfinder.
+- Commissions are ranked by planned route time, not straight-line distance. A chosen commission is kept until it
+  is DONE, it vanishes, or travel to it fails.
+- Spot memory: the miner remembers the standing spots that produced ore in each area. Seeds come from
+  recordings (`tools/build_dwarven_spots.py`), and what each run learns is saved in
+  `config/aether/mining_spots.json`. When nothing is visible in the area it walks to the best remembered spot,
+  instead of waiting. A spot found empty is rechecked after 30s, and a spot that is unreachable 3 times is
+  ignored for 10 minutes. Whether a spot was empty is never saved.
+- The miner sneaks while mining. It throws Pickobulus at the densest patch of 8 or more wanted ore when the tab
+  list or chat says it is ready. The block timeout drops to 4x the measured median break time, never above the
+  setting.
+- Safe stops: death, being outside the Dwarven Mines for 15s, 3 claim runs in a row that leave something
+  unclaimed, or 4 commission areas in a row that can't be reached. A missing mining tool or pigeon is reported.
+- The Commission HUD shows status, commission, progress, area, session time, completions per hour and blocks
+  mined.
+- Not done yet: combat commissions, the forge-after-slayer setting (it needs combat first), the Emissary
+  fallback and Raffle.
 
 ## Observed behaviour (34 commissions in 22.5 minutes, about one per 40s)
 
