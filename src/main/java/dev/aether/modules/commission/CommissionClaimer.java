@@ -41,6 +41,8 @@ public final class CommissionClaimer {
     // a slot still showing claimable after this many clicks isn't taking them
     private static final int MAX_CLICKS_PER_SLOT = 2;
     private static int failedClaims;
+    private static long lastClaimedAt;
+    private static final long TAB_LAG_MS = 6000L;
     private static int ticks;
 
     private CommissionClaimer() {}
@@ -50,6 +52,11 @@ public final class CommissionClaimer {
     }
 
     public static void requestClaim(String reason) {
+        // the tab list keeps showing DONE for a few seconds after a claim, which would open the menu again for nothing
+        if (step == Step.IDLE && System.currentTimeMillis() - lastClaimedAt < TAB_LAG_MS) {
+            CommissionLog.log("claim request ignored (" + reason + "), claimed " + (System.currentTimeMillis() - lastClaimedAt) + "ms ago");
+            return;
+        }
         CommissionLog.log("claim requested: " + reason);
         requested = true;
     }
@@ -159,6 +166,7 @@ public final class CommissionClaimer {
                 CommissionLog.log(unconfirmed + " commission(s) wouldn't claim after " + MAX_CLICKS_PER_SLOT + " clicks each");
             } else if (claimedThisRun > 0) {
                 failedClaims = 0;
+                lastClaimedAt = System.currentTimeMillis();
             }
             CommissionLog.log("nothing left to claim (" + claimedThisRun + " claimed), closing the menu");
             client.player.closeContainer();

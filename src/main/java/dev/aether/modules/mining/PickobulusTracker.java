@@ -13,6 +13,7 @@ public final class PickobulusTracker {
     private static boolean ready;
     private static long cooldownEndsAt;
     private static long usedAt;
+    private static final long TAB_LAG_MS = 6000L;
 
     private PickobulusTracker() {}
 
@@ -45,6 +46,8 @@ public final class PickobulusTracker {
     }
 
     public static void onTab(List<String> lines) {
+        // the tab widget still says available for a few seconds after a cast
+        if (System.currentTimeMillis() - usedAt < TAB_LAG_MS) return;
         for (String line : lines) {
             Matcher m = TAB_LINE.matcher(line.strip().toLowerCase(Locale.ROOT));
             if (!m.find()) continue;
