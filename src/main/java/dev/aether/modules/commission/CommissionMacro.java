@@ -173,6 +173,28 @@ public final class CommissionMacro {
         }
         CommissionLog.log("choosing from: " + considered);
 
+        // ore mined inside an area also counts for the anywhere commissions, so one trip does both
+        if (best != null && best.area() == null) {
+            CommissionTask covering = null;
+            double coveringDistance = Double.MAX_VALUE;
+            for (Commission c : commissions) {
+                CommissionTask task = CommissionTask.of(c.name());
+                if (!task.isMining() || task.area() == null || skipUntil.containsKey(c.name())) continue;
+                if (task.ores().stream().noneMatch(best.ores()::contains)) continue;
+                double distance = Math.sqrt(feet.distSqr(task.area().anchor()));
+                if (distance < coveringDistance) {
+                    coveringDistance = distance;
+                    covering = task;
+                }
+            }
+            if (covering != null) {
+                CommissionLog.log("doing " + covering.commission() + " instead of " + best.commission()
+                        + ", mining there counts for both");
+                best = covering;
+                bestDistance = coveringDistance;
+            }
+        }
+
         if (best == null) {
             if (unsupported && now - lastUnsupportedNoticeAt > UNSUPPORTED_NOTICE_MS) {
                 lastUnsupportedNoticeAt = now;
