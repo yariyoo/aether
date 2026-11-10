@@ -7,6 +7,7 @@ import dev.aether.modules.commission.route.RouteGraph.Point;
 import dev.aether.modules.commission.route.RouteGraph.Step;
 import dev.aether.modules.failsafe.FailsafeManager;
 import dev.aether.modules.gear.GearManager;
+import dev.aether.modules.pathfinding.etherwarp.EtherwarpHelper;
 import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.modules.rotation.RotationManager;
 import dev.aether.util.ClientUtils;
@@ -36,8 +37,11 @@ public final class RouteFollower {
     private static final double WAYPOINT_REACHED = 1.0;
     private static final double HOP_START_REACHED = 0.8;
     private static final double SLOW_DOWN_AT = 2.5;
-    private static final double STEER_LIMIT = 3.0;
-    private static final double LANDING_TOLERANCE = 3.0;
+    // joins this short are steered straight at; longer ones, or a steer that stalls, go to the pathfinder
+    private static final double STEER_LIMIT = 6.5;
+    // aotv rises out of the floor and etherwarp picks the next free block, so landings drift a few blocks
+    private static final double LANDING_TOLERANCE = 4.0;
+    private static final long PATHING_STALL_MS = 4000L;
     private static final double TELEPORT_MOVED = 2.5;
     private static final long WALK_STALL_MS = 2500L;
     private static final long PATHING_LIMIT_MS = 20_000L;
@@ -70,6 +74,8 @@ public final class RouteFollower {
     private boolean rotationStarted;
     private AtomicInteger pathResult = new AtomicInteger();
     private String failure;
+    private boolean steerFailed;
+    private final java.util.Set<Integer> badEntries = new java.util.HashSet<>();
 
     public Status status() {
         return status;
@@ -90,6 +96,7 @@ public final class RouteFollower {
         this.goalName = goalName;
         this.replans = 0;
         this.failure = null;
+        badEntries.clear();
         if (!plan(client, "start")) {
             status = Status.FAILED;
             return false;
@@ -145,7 +152,7 @@ public final class RouteFollower {
         bannedUntil.values().removeIf(until -> until <= now);
         Point here = here(client);
         Set<EdgeType> moves = availableMoves(client);
-        Plan plan = RouteGraph.dwarvenMines().plan(here, goal, goalRadius, moves, bannedUntil.keySet());
+        Plan plan = RouteGraph.dwarvenMines().plan(here, goal, goalRadius, moves, bannedUntil.keySet(), badEntries);
         if (plan == null) {
             failure = "no recorded route to " + goalName + " with " + moves;
             CommissionLog.log("route: " + failure + " from " + fmt(here));
@@ -186,6 +193,7 @@ public final class RouteFollower {
         long now = System.currentTimeMillis();
         phaseSince = now;
         progressAt = now;
+        steerFailed = false;
         switch (step.type()) {
             case WALK -> {
                 Point here = here(client);
@@ -201,7 +209,7 @@ public final class RouteFollower {
                 if (here.horizontal(step.from()) > HOP_START_REACHED || Math.abs(here.y() - step.from().y()) > 1.2) {
                     // line up on the spot the hop was recorded from first
                     steps = new ArrayList<>(steps);
-                    steps.add(index, new Step(EdgeType.WALK, here, step.from(), false, null));
+                    steps.add(index, new Step(EdgeType.WALK, here, step.from(), false, null, step.edge() == null ? -1 : step.edge().a()));
                     beginStep(client);
                     return;
                 }
@@ -232,6 +240,9 @@ public final class RouteFollower {
 
     private void startPathing(Minecraft client, Point to) {
         phase = Phase.PATHING;
+        phaseSince = System.currentTimeMillis();
+        progressAt = phaseSince;
+        bestDistance = here(client).distance(to);
         AtomicInteger result = new AtomicInteger();
         pathResult = result;
         CommissionLog.log("route: pathfinding " + String.format("%.0f", here(client).distance(to)) + " blocks onto the route at " + fmt(to));
@@ -248,10 +259,24 @@ public final class RouteFollower {
             next(client);
             return;
         }
-        if (pathResult.get() == 2 || System.currentTimeMillis() - phaseSince > PATHING_LIMIT_MS) {
-            PathfindingManager.stop();
-            fail(client, "could not walk onto the route at " + fmt(step.to()));
+        long now = System.currentTimeMillis();
+        if (distance < bestDistance - 0.5) {
+            bestDistance = distance;
+            progressAt = now;
         }
+        // the walker can stop partway without ever reporting, so judge it by whether we get closer
+        String problem = pathResult.get() == 2 ? "no walkable path"
+                : now - progressAt > PATHING_STALL_MS && !PathfindingManager.isSearching() ? "pathfinder stalled"
+                : now - phaseSince > PATHING_LIMIT_MS ? "pathfinder timed out" : null;
+        if (problem == null) return;
+        PathfindingManager.stop();
+        joinFailed(client, step, problem + String.format(" %.1f blocks from %s", distance, fmt(step.to())));
+    }
+
+    private void joinFailed(Minecraft client, Step step, String why) {
+        if (step.edge() == null && step.node() >= 0) badEntries.add(step.node());
+        else ban(step);
+        replan(client, "couldn't get onto the route: " + why);
     }
 
     private void tickWalking(Minecraft client) {
@@ -272,6 +297,18 @@ public final class RouteFollower {
             bestDistance = distance;
             progressAt = now;
         } else if (now - progressAt > WALK_STALL_MS) {
+            releaseKeys(client);
+            if (step.edge() == null && !steerFailed) {
+                // something is in the way of the straight line; let the pathfinder find the way round
+                CommissionLog.log(String.format("route: steering stalled %.1f blocks from %s, pathfinding there", distance, fmt(step.to())));
+                startPathing(client, step.to());
+                steerFailed = true;
+                return;
+            }
+            if (step.edge() == null) {
+                joinFailed(client, step, String.format("walk stalled %.1f blocks from %s", distance, fmt(step.to())));
+                return;
+            }
             ban(step);
             replan(client, String.format("walk stalled %.1f blocks from %s", distance, fmt(step.to())));
             return;
@@ -395,6 +432,10 @@ public final class RouteFollower {
     private RotationUtils.Rotation hopAim(Minecraft client, Step step) {
         LocalPlayer player = client.player;
         Vec3 eye = player.getEyePosition();
+        if (step.type() == EdgeType.ETHERWARP) {
+            // hypixel traces etherwarp from its own sneaking eye height, not the modern client's
+            eye = EtherwarpHelper.getEyePosition(client, player.position());
+        }
         if (step.type() == EdgeType.AOTV) {
             Vec3 landingEye = new Vec3(step.to().x(), step.to().y() + player.getEyeHeight(), step.to().z());
             return RotationUtils.calculateLookAt(eye, landingEye);

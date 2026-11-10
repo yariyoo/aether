@@ -34,8 +34,8 @@ public final class RouteGraph {
 
     public record Edge(int index, int a, int b, EdgeType type, boolean jump, Point from, Point to) {}
 
-    // edge is null for the legs that join the graph from where the player stands
-    public record Step(EdgeType type, Point from, Point to, boolean jump, Edge edge) {}
+    // edge is null for the legs that join the graph from where the player stands; node is where the step ends, -1 off the graph
+    public record Step(EdgeType type, Point from, Point to, boolean jump, Edge edge, int node) {}
 
     public record Plan(List<Step> steps, double seconds) {}
 
@@ -113,6 +113,12 @@ public final class RouteGraph {
 
     // cheapest way from start to within goalRadius of goal; null when the allowed moves don't connect them
     public Plan plan(Point start, Point goal, double goalRadius, Set<EdgeType> allowed, Set<Integer> banned) {
+        return plan(start, goal, goalRadius, allowed, banned, Set.of());
+    }
+
+    // badEntries are nodes we already failed to walk onto from here
+    public Plan plan(Point start, Point goal, double goalRadius, Set<EdgeType> allowed, Set<Integer> banned,
+                     Set<Integer> badEntries) {
         int n = nodes.length;
         int source = n, target = n + 1;
         double[] cost = new double[n + 2];
@@ -129,7 +135,7 @@ public final class RouteGraph {
             int u = (int) top[1];
             if (top[0] > cost[u]) continue;
             if (u == target) break;
-            for (Candidate c : neighbours(u, source, target, start, goal, goalRadius, allowed, banned)) {
+            for (Candidate c : neighbours(u, source, target, start, goal, goalRadius, allowed, banned, badEntries)) {
                 double next = cost[u] + c.seconds;
                 if (next < cost[c.node]) {
                     cost[c.node] = next;
@@ -151,29 +157,30 @@ public final class RouteGraph {
     private record Candidate(int node, double seconds, Step step) {}
 
     private List<Candidate> neighbours(int u, int source, int target, Point start, Point goal, double goalRadius,
-                                       Set<EdgeType> allowed, Set<Integer> banned) {
+                                       Set<EdgeType> allowed, Set<Integer> banned, Set<Integer> badEntries) {
         List<Candidate> out = new ArrayList<>();
         if (u == source) {
             boolean near = false;
             for (int i = 0; i < nodes.length; i++) {
                 if (isNear(start, nodes[i], ENTRY_RADIUS)) {
                     near = true;
+                    if (badEntries.contains(i)) continue;
                     out.add(new Candidate(i, start.distance(nodes[i]) / APPROACH_SPEED,
-                            new Step(EdgeType.WALK, start, nodes[i], false, null)));
+                            new Step(EdgeType.WALK, start, nodes[i], false, null, i)));
                 }
             }
             if (!near) {
                 // off the recorded routes: walk to the closest node and join there
-                int closest = closest(start, FAR_ENTRY_RADIUS);
+                int closest = closest(start, FAR_ENTRY_RADIUS, badEntries);
                 if (closest >= 0) {
                     out.add(new Candidate(closest, start.distance(nodes[closest]) / APPROACH_SPEED * 1.5,
-                            new Step(EdgeType.WALK, start, nodes[closest], false, null)));
+                            new Step(EdgeType.WALK, start, nodes[closest], false, null, closest)));
                 }
             }
             if (allowed.contains(EdgeType.WARP)) {
                 // the warp works from anywhere, so taking it first is never worse than walking somewhere and then warping
                 for (int f : forge) {
-                    out.add(new Candidate(f, WARP_COST, new Step(EdgeType.WARP, start, nodes[f], false, null)));
+                    out.add(new Candidate(f, WARP_COST, new Step(EdgeType.WARP, start, nodes[f], false, null, f)));
                 }
             }
             if (start.distance(goal) <= goalRadius) {
@@ -184,12 +191,12 @@ public final class RouteGraph {
         if (u == target) return out;
         for (Edge e : outgoing.get(u)) {
             if (!allowed.contains(e.type()) || banned.contains(e.index())) continue;
-            out.add(new Candidate(e.b(), seconds(e), new Step(e.type(), e.from(), e.to(), e.jump(), e)));
+            out.add(new Candidate(e.b(), seconds(e), new Step(e.type(), e.from(), e.to(), e.jump(), e, e.b())));
         }
         double toGoal = nodes[u].distance(goal);
         if (toGoal <= goalRadius) {
             out.add(new Candidate(target, toGoal / APPROACH_SPEED,
-                    new Step(EdgeType.WALK, nodes[u], goal, false, null)));
+                    new Step(EdgeType.WALK, nodes[u], goal, false, null, -1)));
         }
         return out;
     }
@@ -207,10 +214,11 @@ public final class RouteGraph {
         return a.horizontal(b) <= radius && Math.abs(a.y() - b.y()) <= ENTRY_HEIGHT;
     }
 
-    private int closest(Point p, double radius) {
+    private int closest(Point p, double radius, Set<Integer> skip) {
         int best = -1;
         double bestDistance = radius;
         for (int i = 0; i < nodes.length; i++) {
+            if (skip.contains(i)) continue;
             double d = p.distance(nodes[i]);
             if (d < bestDistance) {
                 bestDistance = d;
