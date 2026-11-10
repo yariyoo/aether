@@ -108,6 +108,8 @@ public final class BlockMiner {
     private static boolean pickobulusClicked;
     private static int ticks;
     private static boolean sneakHeld;
+    private static BlockPos exploringSpot;
+    private static final int SAVE_SPOTS_EVERY = 25;
 
     private BlockMiner() {}
 
@@ -180,6 +182,7 @@ public final class BlockMiner {
         blocksMined = 0;
         minedHere = 0;
         breakTimes.clear();
+        exploringSpot = null;
         lastMined = null;
         skipUntil.clear();
         badSpots.clear();
@@ -204,6 +207,7 @@ public final class BlockMiner {
         if (!enabled) return;
         enabled = false;
         MinerLog.log("stopped (" + reason + "), mined " + blocksMined + " blocks");
+        MiningSpotStore.save();
         if (phase == Phase.PATHING) PathfindingManager.stop();
         target = null;
         pathVein = List.of();
@@ -271,6 +275,11 @@ public final class BlockMiner {
                 skip(pathFor, SKIP_BLOCK_MS);
             }
             justArrived = false;
+            if (exploringSpot != null && exploringSpot.distSqr(client.player.blockPosition()) <= 4) {
+                MinerLog.log("remembered spot " + MinerLog.pos(exploringSpot) + " is empty for now");
+                MiningSpotStore.get().recordEmpty(exploringSpot, System.currentTimeMillis());
+                exploringSpot = null;
+            }
             if (minedHere >= REGEN_MIN_MINED) {
                 MinerLog.log("spot gave " + minedHere + " blocks, waiting up to " + REGEN_WAIT_MS + "ms for it to regenerate");
                 setPhase(Phase.REGEN_WAIT);
@@ -323,6 +332,11 @@ public final class BlockMiner {
             timeoutsHere = 0;
             breakTimes.addLast(System.currentTimeMillis() - phaseStartedAt);
             if (breakTimes.size() > BREAK_SAMPLES) breakTimes.removeFirst();
+            if (area != null && area.contains(client.player.blockPosition())) {
+                MiningSpotStore.get().recordMined(client.player.blockPosition());
+                exploringSpot = null;
+                if (blocksMined % SAVE_SPOTS_EVERY == 0) MiningSpotStore.save();
+            }
             MinerLog.log("mined " + target.kind() + " at " + MinerLog.pos(target.pos()) + " in "
                     + (System.currentTimeMillis() - phaseStartedAt) + "ms, now "
                     + blockName(client, target.pos()) + " (total " + blocksMined + ")");
@@ -396,6 +410,7 @@ public final class BlockMiner {
                 candidates.size(), live.size(), veins.size(), skipUntil.size(), (System.nanoTime() - started) / 1e6));
 
         if (veins.isEmpty()) {
+            if (exploreRemembered(client, "no ore in the area is visible")) return;
             if (noVeinSince == 0L) noVeinSince = now;
             if (!noVeinNoticeSent && now - noVeinSince > NO_VEIN_NOTICE_MS) {
                 ClientUtils.sendMessage("§eNo minable blocks nearby. Waiting for them to regenerate...", false);
@@ -439,6 +454,7 @@ public final class BlockMiner {
             for (MiningVeins.Vein vein : natural) {
                 for (BlockPos pos : vein.blocks()) skip(pos, SKIP_VEIN_MS);
             }
+            exploreRemembered(client, "no standing spot reaches the visible ore");
             return;
         }
         MiningSpotPlanner.Plan chosen = continueVein(plans);
@@ -529,6 +545,7 @@ public final class BlockMiner {
             MinerLog.log("no complete walkable path to " + MinerLog.pos(pathGoal) + " (" + elapsed
                     + "ms), avoiding that spot");
             badSpots.put(pathGoal, System.currentTimeMillis() + SKIP_SPOT_MS);
+            forgetExploring();
             if (tryNextPlan(client)) return;
             abandonPath("no walkable path");
             return;
@@ -551,6 +568,7 @@ public final class BlockMiner {
                     MinerLog.pos(pathGoal), bestGoalDistance));
             PathfindingManager.stop();
             badSpots.put(pathGoal, System.currentTimeMillis() + SKIP_SPOT_MS);
+            forgetExploring();
             if (tryNextPlan(client)) return;
             abandonPath("stuck walking");
             return;
@@ -590,6 +608,7 @@ public final class BlockMiner {
 
     private static void abandonPath(String reason) {
         badSpots.put(pathGoal, System.currentTimeMillis() + SKIP_SPOT_MS);
+        forgetExploring();
         skipVein();
         enterScanning(reason);
     }
@@ -613,6 +632,28 @@ public final class BlockMiner {
             minedHere = 0;
             enterScanning("regen wait over");
         }
+    }
+
+    // with nothing in sight, walk to the best spot that paid off before and look again from there
+    private static boolean exploreRemembered(Minecraft client, String why) {
+        if (area == null) return false;
+        BlockPos feet = client.player.blockPosition();
+        BlockPos spot = MiningSpotStore.get().best(area, feet, System.currentTimeMillis(), badSpots.keySet());
+        if (spot == null) {
+            MinerLog.log(why + ", and no remembered spot in " + area.name() + " is due a look");
+            return false;
+        }
+        MinerLog.log(why + ", checking remembered spot " + MinerLog.pos(spot) + " in " + area.name());
+        exploringSpot = spot;
+        fallbackPlans = new ArrayList<>();
+        startPath(client, spot, null, List.of());
+        return true;
+    }
+
+    private static void forgetExploring() {
+        if (exploringSpot == null || !exploringSpot.equals(pathGoal)) return;
+        MiningSpotStore.get().recordUnreachable(exploringSpot, System.currentTimeMillis());
+        exploringSpot = null;
     }
 
     private static boolean tryPickobulus(Minecraft client, MiningView view) {
