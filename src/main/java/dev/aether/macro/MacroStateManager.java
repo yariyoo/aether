@@ -1,5 +1,6 @@
 package dev.aether.macro;
 
+import dev.aether.modules.commission.CommissionMacro;
 import dev.aether.macro.farming.FarmingMacroManager;
 
 import dev.aether.util.ClientUtils;
@@ -244,6 +245,7 @@ public class MacroStateManager {
         // Stop any active internal farming macro.
         runOnClientThread(client, () -> FarmingMacroManager.disable(client));
         MetalDetectorSolver.stopForMacro(client);
+        CommissionMacro.stopForMacro(client);
         BlockMiner.stopForMacro(client);
         AutoCarnivalManager.stopForMacro(client);
         FailsafeManager.reset();

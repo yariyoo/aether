@@ -789,5 +789,10 @@
   "text.aether.claim_finished_commissions_with_the_royal_pigeon": "Claim finished commissions with the Royal Pigeon",
   "text.aether.auto_claim": "Auto Claim",
   "text.aether.commands": "Commands",
-  "text.aether.aether_commissions_lists_your_commissions_aether_commissions_claim_claims_finished_ones_now": "/aether commissions lists your commissions. /aether commissions claim claims finished ones now."
+  "text.aether.aether_commissions_lists_your_commissions_aether_commissions_claim_claims_finished_ones_now": "/aether commissions lists your commissions. /aether commissions claim claims finished ones now.",
+  "text.aether.dwarven_commissions": "Dwarven Commissions",
+  "text.aether.do_commissions_automatically": "Do commissions automatically",
+  "text.aether.run_dwarven_commissions": "Run Dwarven Commissions",
+  "text.aether.how_it_works": "How it works",
+  "text.aether.starts_when_you_close_this_menu_picks_the_quickest_mining_commission_walks_to_its_area_mines_it_and_claims_it_with_your_royal_pigeon_combat_and_event_commissions_are_not_supported_yet_aether_commissions_start_stop_or_toggle_work_too": "Starts when you close this menu. Picks the quickest mining commission, walks to its area, mines it and claims it with your Royal Pigeon. Combat and event commissions are not supported yet. /aether commissions start, stop or toggle work too."
 }

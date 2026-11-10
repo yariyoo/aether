@@ -6,6 +6,7 @@ public class MacroState {
         FARMING,
         METAL_DETECTING,
         MINING,
+        COMMISSIONS,
         AUTO_CARNIVAL,
         CLEANING,
         RECOVERING,

@@ -1,5 +1,6 @@
 package dev.aether.bootstrap;
 
+import dev.aether.modules.commission.CommissionMacro;
 import dev.aether.modules.commission.CommissionClaimer;
 import dev.aether.modules.recorder.GameplayRecorder;
 import com.mojang.brigadier.arguments.FloatArgumentType;
@@ -174,6 +175,21 @@ public final class AetherCommandRegistrar {
                                     .then(ClientCommands.literal("claim")
                                             .executes(ctx -> {
                                                 CommissionClaimer.requestClaim("command");
+                                                return 1;
+                                            }))
+                                    .then(ClientCommands.literal("start")
+                                            .executes(ctx -> {
+                                                CommissionMacro.requestStart();
+                                                return 1;
+                                            }))
+                                    .then(ClientCommands.literal("stop")
+                                            .executes(ctx -> {
+                                                if (CommissionMacro.isRunningOrPending()) CommissionMacro.toggle();
+                                                return 1;
+                                            }))
+                                    .then(ClientCommands.literal("toggle")
+                                            .executes(ctx -> {
+                                                CommissionMacro.toggle();
                                                 return 1;
                                             })))
                             .then(ClientCommands.literal("record")
