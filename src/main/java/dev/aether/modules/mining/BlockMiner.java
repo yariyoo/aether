@@ -87,6 +87,9 @@ public final class BlockMiner {
     private static AtomicInteger pathResult = new AtomicInteger(PATH_PENDING);
     private static final Map<BlockPos, Long> skipUntil = new HashMap<>();
     private static final MiningBlockIndex index = new MiningBlockIndex();
+    private static Set<MiningBlockKind> kindsOverride;
+    private static BlockPos anchor;
+    private static int anchorRadius;
 
     private BlockMiner() {}
 
@@ -106,6 +109,27 @@ public final class BlockMiner {
         }
     }
 
+    // started by another macro: it owns the macro state, picks the ores and keeps the miner inside an area
+    public static boolean startManaged(Minecraft client, Set<MiningBlockKind> kinds, BlockPos areaAnchor, int radius) {
+        if (client.player == null || client.level == null) return false;
+        if (enabled) stop(client, false, "restarting for a new target");
+        if (!selectMiningTool(client)) {
+            MinerLog.log("managed start refused: no mining tool in hotbar");
+            ClientUtils.sendMessage("§cNo pickaxe, drill or gauntlet found in hotbar.", false);
+            return false;
+        }
+        kindsOverride = Set.copyOf(kinds);
+        anchor = areaAnchor;
+        anchorRadius = radius;
+        beginRun(client, "managed: kinds " + kinds + ", area " + (areaAnchor == null ? "anywhere"
+                : MinerLog.pos(areaAnchor) + " r=" + radius));
+        return true;
+    }
+
+    public static void stopManaged(Minecraft client) {
+        stop(client, false, "managed stop");
+    }
+
     public static void start(Minecraft client) {
         if (enabled || client.player == null || client.level == null) return;
         MinerLog.log("start requested at " + MinerLog.pos(client.player.blockPosition())
@@ -121,12 +145,20 @@ public final class BlockMiner {
             ClientUtils.sendMessage("§cNo pickaxe, drill or gauntlet found in hotbar.", false);
             return;
         }
-        Set<MiningBlockKind> allowed = allowedKinds();
-        if (allowed.isEmpty()) {
+        if (allowedKinds().isEmpty()) {
             MinerLog.log("start refused: every block type is disabled");
             ClientUtils.sendMessage("§cEnable at least one block type in the Block Miner settings.", false);
             return;
         }
+        kindsOverride = null;
+        anchor = null;
+        beginRun(client, "manual");
+        MacroStateManager.setCurrentState(MacroState.State.MINING);
+        ClientUtils.sendMessage("§aBlock miner started.", false);
+    }
+
+    private static void beginRun(Minecraft client, String mode) {
+        Set<MiningBlockKind> allowed = allowedKinds();
         enabled = true;
         blocksMined = 0;
         minedHere = 0;
@@ -134,7 +166,7 @@ public final class BlockMiner {
         badSpots.clear();
         levelIdentity = System.identityHashCode(client.level);
         index.reset();
-        MinerLog.log("started: allowed " + allowed
+        MinerLog.log("started (" + mode + "): allowed " + allowed
                 + ", prefer titanium " + AetherConfig.MINER_PREFER_TITANIUM.get()
                 + ", render distance " + client.options.getEffectiveRenderDistance()
                 + ", reach " + String.format("%.2f", reach(client))
@@ -142,8 +174,6 @@ public final class BlockMiner {
                 + " (" + client.player.getMainHandItem().getHoverName().getString() + ")");
         logSurroundings(client);
         enterSearching("start");
-        MacroStateManager.setCurrentState(MacroState.State.MINING);
-        ClientUtils.sendMessage("§aBlock miner started.", false);
     }
 
     public static void stopForMacro(Minecraft client) {
@@ -164,6 +194,8 @@ public final class BlockMiner {
         if (MacroStateManager.getCurrentState() == MacroState.State.MINING) {
             MacroStateManager.setCurrentState(MacroState.State.OFF);
         }
+        kindsOverride = null;
+        anchor = null;
         if (announce) {
             ClientUtils.sendMessage("§eBlock miner stopped. Mined " + blocksMined + " blocks.", false);
         }
@@ -312,7 +344,9 @@ public final class BlockMiner {
         long started = System.nanoTime();
         List<BlockPos> candidates = index.nearest(feet, allowed, skipUntil.keySet(), CANDIDATE_LIMIT);
         List<BlockPos> live = new ArrayList<>(candidates.size());
+        long anchorLimit = (long) anchorRadius * anchorRadius;
         for (BlockPos pos : candidates) {
+            if (anchor != null && pos.distSqr(anchor) > anchorLimit) continue;
             MiningBlockKind kind = view.kindAt(pos);
             if (kind != null && allowed.contains(kind)) live.add(pos);
         }
@@ -590,6 +624,7 @@ public final class BlockMiner {
     }
 
     private static Set<MiningBlockKind> allowedKinds() {
+        if (kindsOverride != null) return kindsOverride;
         Set<MiningBlockKind> kinds = EnumSet.noneOf(MiningBlockKind.class);
         if (AetherConfig.MINER_GRAY_MITHRIL.get()) kinds.add(MiningBlockKind.GRAY_MITHRIL);
         if (AetherConfig.MINER_GREEN_MITHRIL.get()) kinds.add(MiningBlockKind.GREEN_MITHRIL);
