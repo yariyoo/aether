@@ -2,10 +2,10 @@ package dev.aether.modules.commission;
 
 import dev.aether.util.ClientUtils;
 
-final class CommissionLog {
+public final class CommissionLog {
     private CommissionLog() {}
 
-    static void log(String message) {
+    public static void log(String message) {
         ClientUtils.sendDebugMessage("[Commission] " + message);
     }
 }
