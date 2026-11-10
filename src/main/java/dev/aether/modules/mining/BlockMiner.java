@@ -10,6 +10,7 @@ import dev.aether.modules.gear.GearManager;
 import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.modules.rotation.RotationManager;
 import dev.aether.util.ClientUtils;
+import dev.aether.util.TablistUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -56,7 +57,7 @@ public final class BlockMiner {
     private static final int MAX_VEINS_RANKED = 16;
     private static final int DIAGNOSTIC_RADIUS = 6;
 
-    private enum Phase { SEARCHING, AIMING, MINING, SCANNING, PATHING, REGEN_WAIT }
+    private enum Phase { SEARCHING, AIMING, MINING, SCANNING, PATHING, REGEN_WAIT, PICKOBULUS }
 
     private static final int PATH_PENDING = 0;
     private static final int PATH_DONE = 1;
@@ -93,6 +94,20 @@ public final class BlockMiner {
     private static MiningArea area;
     private static final long SKIP_UNBREAKABLE_MS = 600_000L;
     private static final int UNBREAKABLE_RADIUS = 2;
+    private static final long PICKOBULUS_CONFIRM_MS = 1500L;
+    private static final long PICKOBULUS_BACKOFF_MS = 60_000L;
+    private static final int TAB_CHECK_TICKS = 20;
+    // once enough breaks are timed, a block taking this many times the usual is treated as not breaking
+    private static final int BREAK_SAMPLES = 20;
+    private static final int BREAK_SAMPLES_NEEDED = 5;
+    private static final double SLOW_BREAK_FACTOR = 4.0;
+    private static final long MIN_ADAPTIVE_TIMEOUT_MS = 1500L;
+    private static final double TITANIUM_SPOT_WEIGHT = 4.0;
+    private static final java.util.ArrayDeque<Long> breakTimes = new java.util.ArrayDeque<>();
+    private static MiningPickobulus.Blast blast;
+    private static boolean pickobulusClicked;
+    private static int ticks;
+    private static boolean sneakHeld;
 
     private BlockMiner() {}
 
@@ -164,13 +179,15 @@ public final class BlockMiner {
         enabled = true;
         blocksMined = 0;
         minedHere = 0;
+        breakTimes.clear();
         lastMined = null;
         skipUntil.clear();
         badSpots.clear();
         levelIdentity = System.identityHashCode(client.level);
         index.reset();
         MinerLog.log("started (" + mode + "): allowed " + allowed
-                + ", prefer titanium " + AetherConfig.MINER_PREFER_TITANIUM.get()
+                + ", prefer titanium " + preferTitanium()
+                + ", sneak " + AetherConfig.MINER_SNEAK.get() + ", pickobulus " + AetherConfig.MINER_PICKOBULUS.get()
                 + ", render distance " + client.options.getEffectiveRenderDistance()
                 + ", reach " + String.format("%.2f", reach(client))
                 + ", tool slot " + FailsafeManager.getCurrentSelectedSlot(client)
@@ -192,7 +209,10 @@ public final class BlockMiner {
         pathVein = List.of();
         skipUntil.clear();
         index.reset();
-        if (client != null) client.execute(() -> releaseAttack(client));
+        if (client != null) client.execute(() -> {
+            releaseAttack(client);
+            holdSneak(client, false);
+        });
         RotationManager.cancelRotation();
         if (MacroStateManager.getCurrentState() == MacroState.State.MINING) {
             MacroStateManager.setCurrentState(MacroState.State.OFF);
@@ -222,6 +242,9 @@ public final class BlockMiner {
             return;
         }
 
+        if (++ticks % TAB_CHECK_TICKS == 0) PickobulusTracker.onTab(TablistUtils.getTabLines(client));
+        // sneaking keeps us from stepping off ledges while turning between blocks, like the recorded runs
+        holdSneak(client, AetherConfig.MINER_SNEAK.get() && phase != Phase.PATHING && phase != Phase.SCANNING);
         index.tick(client);
         pruneSkips();
         LiveMiningView view = new LiveMiningView(client.level, client.player);
@@ -232,6 +255,7 @@ public final class BlockMiner {
             case SCANNING -> tickScanning(client, view);
             case PATHING -> tickPathing(client, view);
             case REGEN_WAIT -> tickRegenWait(client, view);
+            case PICKOBULUS -> tickPickobulus(client, view);
         }
     }
 
@@ -239,7 +263,7 @@ public final class BlockMiner {
         releaseAttack(client);
         MiningTargetSelector.Target found = MiningTargetSelector.select(view,
                 client.player.getEyePosition(), client.player.getViewVector(1.0f), reach(client),
-                allowedKinds(), AetherConfig.MINER_PREFER_TITANIUM.get(), skipUntil.keySet());
+                allowedKinds(), preferTitanium(), skipUntil.keySet());
         if (found == null) {
             MinerLog.log("nothing visible in reach from " + MinerLog.pos(client.player.blockPosition()));
             if (justArrived && pathFor != null) {
@@ -257,6 +281,7 @@ public final class BlockMiner {
             return;
         }
         justArrived = false;
+        if (tryPickobulus(client, view)) return;
         target = found;
         MinerLog.log("target " + found.kind() + " at " + MinerLog.pos(found.pos())
                 + String.format(", %.2f blocks away", client.player.getEyePosition().distanceTo(found.aim())));
@@ -296,6 +321,8 @@ public final class BlockMiner {
             minedHere++;
             lastMined = target.pos();
             timeoutsHere = 0;
+            breakTimes.addLast(System.currentTimeMillis() - phaseStartedAt);
+            if (breakTimes.size() > BREAK_SAMPLES) breakTimes.removeFirst();
             MinerLog.log("mined " + target.kind() + " at " + MinerLog.pos(target.pos()) + " in "
                     + (System.currentTimeMillis() - phaseStartedAt) + "ms, now "
                     + blockName(client, target.pos()) + " (total " + blocksMined + ")");
@@ -308,7 +335,7 @@ public final class BlockMiner {
             return;
         }
         long now = System.currentTimeMillis();
-        long timeoutMs = Math.round(AetherConfig.MINER_BLOCK_TIMEOUT_SECONDS.get() * 1000.0f);
+        long timeoutMs = blockTimeoutMs();
         if (now - phaseStartedAt > timeoutMs) {
             timeoutsHere++;
             MinerLog.log("gave up on " + MinerLog.pos(target.pos()) + " after " + timeoutMs + "ms ("
@@ -399,7 +426,7 @@ public final class BlockMiner {
         }
         long planStarted = System.nanoTime();
         List<MiningSpotPlanner.Plan> plans = MiningSpotPlanner.rank(view, natural, live, feet, reach,
-                badSpots.keySet(), area, MAX_VEINS_RANKED);
+                badSpots.keySet(), area, MAX_VEINS_RANKED, preferTitanium() ? TITANIUM_SPOT_WEIGHT : 1.0);
         MinerLog.log(String.format("ranked %d spots from %d veins in %.1fms", plans.size(), natural.size(),
                 (System.nanoTime() - planStarted) / 1e6));
         for (int i = 0; i < Math.min(3, plans.size()); i++) {
@@ -475,6 +502,7 @@ public final class BlockMiner {
         lastProgressAt = System.currentTimeMillis();
         pathTicks = 0;
         lastPathLogAt = lastProgressAt;
+        holdSneak(client, false);
         MinerLog.log("walking to " + MinerLog.pos(spot) + " from " + MinerLog.pos(client.player.blockPosition()));
         // full paths only: a partial path walks into a wall and stops there
         PathfindingManager.startConfiguredWalk(client, spot.getX(), spot.getY(), spot.getZ(),
@@ -538,7 +566,7 @@ public final class BlockMiner {
     private static boolean tryMineOnTheWay(Minecraft client, MiningView view) {
         MiningTargetSelector.Target found = MiningTargetSelector.select(view,
                 client.player.getEyePosition(), client.player.getViewVector(1.0f), reach(client),
-                allowedKinds(), AetherConfig.MINER_PREFER_TITANIUM.get(), skipUntil.keySet());
+                allowedKinds(), preferTitanium(), skipUntil.keySet());
         if (found == null) return false;
         if (area != null && !area.contains(client.player.blockPosition())) return false;
         if (area == null && !MiningVeinFilter.inspect(view, List.of(found.pos())).looksNatural()) return false;
@@ -570,7 +598,7 @@ public final class BlockMiner {
         releaseAttack(client);
         MiningTargetSelector.Target found = MiningTargetSelector.select(view,
                 client.player.getEyePosition(), client.player.getViewVector(1.0f), reach(client),
-                allowedKinds(), AetherConfig.MINER_PREFER_TITANIUM.get(), skipUntil.keySet());
+                allowedKinds(), preferTitanium(), skipUntil.keySet());
         long waited = System.currentTimeMillis() - phaseStartedAt;
         if (found != null) {
             MinerLog.log("ore regenerated after " + waited + "ms: " + found.kind() + " at " + MinerLog.pos(found.pos()));
@@ -585,6 +613,76 @@ public final class BlockMiner {
             minedHere = 0;
             enterScanning("regen wait over");
         }
+    }
+
+    private static boolean tryPickobulus(Minecraft client, MiningView view) {
+        if (!AetherConfig.MINER_PICKOBULUS.get() || !PickobulusTracker.isReady(System.currentTimeMillis())) return false;
+        MiningPickobulus.Blast found = MiningPickobulus.best(view, client.player.getEyePosition(), reach(client),
+                allowedKinds(), skipUntil.keySet());
+        if (found == null || found.ore() < MiningPickobulus.MIN_ORE) return false;
+        blast = found;
+        pickobulusClicked = false;
+        MinerLog.log("pickobulus is ready, throwing it at " + MinerLog.pos(found.pos()) + " (" + found.ore() + " ore around it)");
+        RotationManager.cancelRotation();
+        RotationManager.initiateRotation(client, found.aim(), 0L);
+        setPhase(Phase.PICKOBULUS);
+        return true;
+    }
+
+    private static void tickPickobulus(Minecraft client, MiningView view) {
+        releaseAttack(client);
+        long now = System.currentTimeMillis();
+        if (pickobulusClicked) {
+            if (PickobulusTracker.usedAt() >= phaseStartedAt) {
+                MinerLog.log("pickobulus went off after " + (now - phaseStartedAt) + "ms");
+                minedHere += blast.ore();
+                enterSearching("pickobulus thrown");
+            } else if (now - phaseStartedAt > PICKOBULUS_CONFIRM_MS) {
+                MinerLog.log("pickobulus didn't fire (no chat line), not trying again for " + PICKOBULUS_BACKOFF_MS / 1000 + "s");
+                PickobulusTracker.castFailed(now, PICKOBULUS_BACKOFF_MS);
+                enterSearching("pickobulus failed");
+            }
+            return;
+        }
+        HitResult hit = client.hitResult;
+        boolean onBlast = hit instanceof BlockHitResult blockHit && hit.getType() == HitResult.Type.BLOCK
+                && blockHit.getBlockPos().equals(blast.pos());
+        if (onBlast) {
+            RotationManager.cancelRotation();
+            ClientUtils.performUseClickInstant();
+            pickobulusClicked = true;
+            phaseStartedAt = now;
+            return;
+        }
+        if (now - phaseStartedAt > AIM_TIMEOUT_MS) {
+            MinerLog.log("could not aim pickobulus at " + MinerLog.pos(blast.pos()) + ", mining normally");
+            PickobulusTracker.castFailed(now, 5000L);
+            enterSearching("pickobulus aim timeout");
+            return;
+        }
+        if (!RotationManager.isRotating()) RotationManager.initiateRotation(client, blast.aim(), 0L);
+    }
+
+    // the setting is the ceiling; with a few breaks timed it drops to what this tool actually needs
+    private static long blockTimeoutMs() {
+        long configured = Math.round(AetherConfig.MINER_BLOCK_TIMEOUT_SECONDS.get() * 1000.0f);
+        if (breakTimes.size() < BREAK_SAMPLES_NEEDED) return configured;
+        List<Long> sorted = new ArrayList<>(breakTimes);
+        sorted.sort(null);
+        long median = sorted.get(sorted.size() / 2);
+        return Math.min(configured, Math.max(MIN_ADAPTIVE_TIMEOUT_MS, Math.round(median * SLOW_BREAK_FACTOR)));
+    }
+
+    private static boolean preferTitanium() {
+        if (kindsOverride != null) return kindsOverride.contains(MiningBlockKind.TITANIUM);
+        return AetherConfig.MINER_PREFER_TITANIUM.get();
+    }
+
+    private static void holdSneak(Minecraft client, boolean down) {
+        if (client.options == null || down == sneakHeld) return;
+        sneakHeld = down;
+        ClientUtils.setKeyMappingState(client.options.keyShift, down);
+        if (client.player != null) client.player.setShiftKeyDown(down);
     }
 
     private static void skipVein() {

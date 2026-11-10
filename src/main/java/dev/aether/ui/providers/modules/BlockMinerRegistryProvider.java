@@ -26,11 +26,15 @@ public final class BlockMinerRegistryProvider extends AbstractMiningRegistryProv
                 .add(toggle("Titanium", AetherConfig.MINER_TITANIUM))
                 .add(toggle("Prefer Titanium", AetherConfig.MINER_PREFER_TITANIUM));
 
+        SettingGroup technique = SettingGroup.alwaysOn("Technique", "How the miner works a vein")
+                .add(toggle("Sneak While Mining", AetherConfig.MINER_SNEAK))
+                .add(toggle("Use Pickobulus", AetherConfig.MINER_PICKOBULUS));
+
         SettingGroup behaviour = SettingGroup.alwaysOn("Behaviour", "How the miner handles stuck blocks")
                 .add(new InfoSetting("Trigger",
                         () -> "Run /aether miner to start or stop. It finds ore anywhere in loaded chunks and walks to the nearest vein.")
                         .multiline())
-                .add(new SliderSetting("Block Timeout", 1, 15,
+                .add(new SliderSetting("Max Block Timeout", 1, 15,
                         () -> AetherConfig.MINER_BLOCK_TIMEOUT_SECONDS.get(), value -> {
                             AetherConfig.MINER_BLOCK_TIMEOUT_SECONDS.set(Math.round(value * 2) / 2.0f);
                             AetherConfig.save();
@@ -39,7 +43,7 @@ public final class BlockMinerRegistryProvider extends AbstractMiningRegistryProv
         return MainGUIRegistry.subTab(
                 "Block Miner",
                 "Mines mithril and titanium in reach",
-                List.of(blocks, behaviour));
+                List.of(blocks, technique, behaviour));
     }
 
     private static ToggleSetting toggle(String name, BooleanEntry entry) {

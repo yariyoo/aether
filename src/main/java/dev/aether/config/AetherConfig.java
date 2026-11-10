@@ -566,6 +566,8 @@ public final class AetherConfig {
         public static final BooleanEntry MINER_BLUE_MITHRIL = Config.bool("minerBlueMithril", true);
         public static final BooleanEntry MINER_TITANIUM = Config.bool("minerTitanium", true);
         public static final BooleanEntry MINER_PREFER_TITANIUM = Config.bool("minerPreferTitanium", true);
+        public static final BooleanEntry MINER_SNEAK = Config.bool("minerSneak", true);
+        public static final BooleanEntry MINER_PICKOBULUS = Config.bool("minerPickobulus", true);
         // renamed from minerBlockTimeoutSeconds so the old 8s saved value doesn't carry over
         public static final FloatEntry MINER_BLOCK_TIMEOUT_SECONDS = Config
                         .floatVal("minerBlockTimeout", 3.0f).range(1.0f, 15.0f);
