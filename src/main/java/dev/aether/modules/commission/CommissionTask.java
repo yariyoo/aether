@@ -25,7 +25,9 @@ public record CommissionTask(String commission, Kind kind, Set<MiningBlockKind> 
 
     private static final Set<MiningBlockKind> MITHRIL = EnumSet.of(
             MiningBlockKind.GRAY_MITHRIL, MiningBlockKind.GREEN_MITHRIL, MiningBlockKind.BLUE_MITHRIL);
-    private static final Set<MiningBlockKind> TITANIUM = EnumSet.of(MiningBlockKind.TITANIUM);
+    // titanium only spawns where mithril is mined, so a titanium commission mines mithril while none is in reach
+    private static final Set<MiningBlockKind> TITANIUM = EnumSet.of(MiningBlockKind.TITANIUM,
+            MiningBlockKind.GRAY_MITHRIL, MiningBlockKind.GREEN_MITHRIL, MiningBlockKind.BLUE_MITHRIL);
 
     public boolean isMining() {
         return kind == Kind.MINING;

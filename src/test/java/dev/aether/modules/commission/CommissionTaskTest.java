@@ -13,8 +13,9 @@ class CommissionTaskTest {
         CommissionTask task = CommissionTask.of("Rampart's Quarry Titanium");
         assertTrue(task.isMining());
         assertEquals("Rampart's Quarry", task.area().name());
-        assertEquals(1, task.ores().size());
         assertTrue(task.ores().contains(MiningBlockKind.TITANIUM));
+        // mithril too, since titanium spawns from mining it
+        assertTrue(task.ores().contains(MiningBlockKind.GRAY_MITHRIL));
 
         CommissionTask royal = CommissionTask.of("Royal Mines Mithril");
         assertEquals("Royal Mines", royal.area().name());

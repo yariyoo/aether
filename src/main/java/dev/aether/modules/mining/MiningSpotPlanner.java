@@ -29,6 +29,13 @@ public final class MiningSpotPlanner {
     // standArea, when set, is the only place the player may stand
     public static List<Plan> rank(MiningView view, List<MiningVeins.Vein> veins, List<BlockPos> ore,
                                   BlockPos feet, double reach, Set<BlockPos> badSpots, MiningArea standArea, int maxVeins) {
+        return rank(view, veins, ore, feet, reach, badSpots, standArea, maxVeins, 1.0);
+    }
+
+    // titaniumWeight counts each reachable titanium as that many blocks when scoring a spot
+    public static List<Plan> rank(MiningView view, List<MiningVeins.Vein> veins, List<BlockPos> ore,
+                                  BlockPos feet, double reach, Set<BlockPos> badSpots, MiningArea standArea, int maxVeins,
+                                  double titaniumWeight) {
         List<Plan> plans = new ArrayList<>();
         for (int v = 0; v < Math.min(maxVeins, veins.size()); v++) {
             List<BlockPos> blocks = veins.get(v).blocks();
@@ -37,9 +44,14 @@ public final class MiningSpotPlanner {
                         pos -> !badSpots.contains(pos) && (standArea == null || standArea.contains(pos)));
                 if (spot == null) continue;
                 int reachable = reachableFrom(view, spot, ore, reach);
+                double value = reachable;
+                if (titaniumWeight != 1.0) {
+                    List<BlockPos> titanium = ore.stream().filter(p -> view.kindAt(p) == MiningBlockKind.TITANIUM).toList();
+                    value += (titaniumWeight - 1.0) * reachableFrom(view, spot, titanium, reach);
+                }
                 double distance = Math.sqrt(spot.distSqr(feet));
                 plans.add(new Plan(spot, blocks.get(b), blocks, reachable, distance,
-                        reachable / (1.0 + distance / DISTANCE_SCALE)));
+                        value / (1.0 + distance / DISTANCE_SCALE)));
                 break;
             }
         }

@@ -6,6 +6,7 @@ import dev.aether.modules.gear.GearManager;
 import dev.aether.modules.commission.route.RouteFollower;
 import dev.aether.modules.commission.route.RouteGraph;
 import dev.aether.modules.mining.BlockMiner;
+import dev.aether.modules.mining.MiningBlockKind;
 import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.util.ClientUtils;
 import net.minecraft.client.Minecraft;
@@ -231,6 +232,8 @@ public final class CommissionMacro {
                 CommissionTask task = CommissionTask.of(c.name());
                 if (!task.isMining() || task.area() == null || skipUntil.containsKey(c.name())) continue;
                 if (task.ores().stream().noneMatch(best.ores()::contains)) continue;
+                // titanium commissions also accept mithril, but a mithril-only area won't move titanium along
+                if (best.ores().contains(MiningBlockKind.TITANIUM) && !task.ores().contains(MiningBlockKind.TITANIUM)) continue;
                 double distance = task.area().contains(feet) ? 0.0 : travelSeconds(client, task);
                 if (distance < coveringDistance) {
                     coveringDistance = distance;
