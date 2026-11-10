@@ -1,5 +1,6 @@
 package dev.aether.modules.commission;
 
+import dev.aether.modules.mining.MiningArea;
 import dev.aether.modules.mining.MiningBlockKind;
 import net.minecraft.core.BlockPos;
 
@@ -9,18 +10,18 @@ import java.util.Locale;
 import java.util.Set;
 
 // what a commission asks for, and where it has to be done
-public record CommissionTask(String commission, Kind kind, Set<MiningBlockKind> ores, Area area) {
+public record CommissionTask(String commission, Kind kind, Set<MiningBlockKind> ores, MiningArea area) {
     public enum Kind { MINING, COMBAT, EVENT, IGNORED, UNKNOWN }
 
-    // anchors are the spots a working macro mined each area from; the radius keeps mining inside the area
-    public record Area(String name, BlockPos anchor, int radius) {}
+    private static final int AREA_MARGIN = 4;
 
-    public static final List<Area> AREAS = List.of(
-            new Area("Upper Mines", new BlockPos(-110, 167, -74), 30),
-            new Area("Royal Mines", new BlockPos(177, 152, 24), 30),
-            new Area("Lava Springs", new BlockPos(42, 198, -13), 30),
-            new Area("Cliffside Veins", new BlockPos(8, 129, 38), 30),
-            new Area("Rampart's Quarry", new BlockPos(-85, 154, -16), 30));
+    // boxes are where a working macro stood while each area's commission went up, so they are known to count
+    public static final List<MiningArea> AREAS = List.of(
+            MiningArea.around("Upper Mines", -111, 167, -75, -109, 167, -73, new BlockPos(-110, 167, -74), AREA_MARGIN),
+            MiningArea.around("Royal Mines", 144, 150, 22, 178, 152, 30, new BlockPos(177, 152, 24), AREA_MARGIN),
+            MiningArea.around("Lava Springs", 39, 198, -25, 55, 202, -9, new BlockPos(42, 198, -13), AREA_MARGIN),
+            MiningArea.around("Cliffside Veins", 7, 128, 38, 17, 129, 39, new BlockPos(8, 129, 38), AREA_MARGIN),
+            MiningArea.around("Rampart's Quarry", -86, 154, -18, -84, 154, -15, new BlockPos(-85, 154, -16), AREA_MARGIN));
 
     private static final Set<MiningBlockKind> MITHRIL = EnumSet.of(
             MiningBlockKind.GRAY_MITHRIL, MiningBlockKind.GREEN_MITHRIL, MiningBlockKind.BLUE_MITHRIL);
@@ -42,7 +43,7 @@ public record CommissionTask(String commission, Kind kind, Set<MiningBlockKind> 
         if (lower.equals("titanium miner")) {
             return new CommissionTask(name, Kind.MINING, TITANIUM, null);
         }
-        for (Area area : AREAS) {
+        for (MiningArea area : AREAS) {
             String areaName = area.name().toLowerCase(Locale.ROOT);
             if (lower.equals(areaName + " mithril")) return new CommissionTask(name, Kind.MINING, MITHRIL, area);
             if (lower.equals(areaName + " titanium")) return new CommissionTask(name, Kind.MINING, TITANIUM, area);
