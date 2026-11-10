@@ -109,6 +109,11 @@ public final class BlockMiner {
     private static boolean pickobulusClicked;
     private static int ticks;
     private static boolean sneakHeld;
+    private static boolean redigNextTick;
+    // set when the current spot ran dry: try another spot on the vein first, and only wait for regen if none
+    private static boolean regenFallback;
+    private static final long LEAVE_DRY_SPOT_MS = 15_000L;
+    private static final int MIN_ORE_TO_MOVE = 2;
     private static BlockPos exploringSpot;
     private static final int SAVE_SPOTS_EVERY = 25;
 
@@ -187,6 +192,8 @@ public final class BlockMiner {
         enabled = true;
         blocksMined = 0;
         minedHere = 0;
+        regenFallback = false;
+        redigNextTick = false;
         breakTimes.clear();
         exploringSpot = null;
         lastMined = null;
@@ -287,8 +294,10 @@ public final class BlockMiner {
                 exploringSpot = null;
             }
             if (minedHere >= REGEN_MIN_MINED) {
-                MinerLog.log("spot gave " + minedHere + " blocks, waiting up to " + REGEN_WAIT_MS + "ms for it to regenerate");
-                setPhase(Phase.REGEN_WAIT);
+                MinerLog.log("spot gave " + minedHere + " blocks and is dry, looking for another spot on the vein");
+                regenFallback = true;
+                badSpots.put(client.player.blockPosition(), System.currentTimeMillis() + LEAVE_DRY_SPOT_MS);
+                enterScanning("spot dry");
                 return;
             }
             setPhase(Phase.SCANNING);
@@ -330,23 +339,45 @@ public final class BlockMiner {
         }
     }
 
+    private static void recordBreak(Minecraft client) {
+        blocksMined++;
+        totalMined++;
+        minedHere++;
+        lastMined = target.pos();
+        timeoutsHere = 0;
+        regenFallback = false;
+        breakTimes.addLast(System.currentTimeMillis() - phaseStartedAt);
+        if (breakTimes.size() > BREAK_SAMPLES) breakTimes.removeFirst();
+        if (area != null && area.contains(client.player.blockPosition())) {
+            MiningSpotStore.get().recordMined(client.player.blockPosition());
+            exploringSpot = null;
+            if (blocksMined % SAVE_SPOTS_EVERY == 0) MiningSpotStore.save();
+        }
+        MinerLog.log("mined " + target.kind() + " at " + MinerLog.pos(target.pos()) + " in "
+                + (System.currentTimeMillis() - phaseStartedAt) + "ms, now "
+                + blockName(client, target.pos()) + " (total " + blocksMined + ")");
+    }
+
     private static void tickMining(Minecraft client, MiningView view) {
+        if (redigNextTick) {
+            // one tick with attack up makes the client start a fresh dig instead of continuing the spent one
+            redigNextTick = false;
+            releaseAttack(client);
+            return;
+        }
+        MiningBlockKind kindNow = view.kindAt(target.pos());
+        if (kindNow != null && kindNow != target.kind() && allowedKinds().contains(kindNow)) {
+            // mithril can break into titanium and stay solid; that was a break, and the new block needs its own dig
+            recordBreak(client);
+            MinerLog.log("block turned into " + kindNow + ", mining it too");
+            target = new MiningTargetSelector.Target(target.pos(), kindNow, target.aim());
+            phaseStartedAt = System.currentTimeMillis();
+            redigNextTick = true;
+            releaseAttack(client);
+            return;
+        }
         if (!MiningTargetSelector.isStillMineable(view, target, allowedKinds())) {
-            blocksMined++;
-            totalMined++;
-            minedHere++;
-            lastMined = target.pos();
-            timeoutsHere = 0;
-            breakTimes.addLast(System.currentTimeMillis() - phaseStartedAt);
-            if (breakTimes.size() > BREAK_SAMPLES) breakTimes.removeFirst();
-            if (area != null && area.contains(client.player.blockPosition())) {
-                MiningSpotStore.get().recordMined(client.player.blockPosition());
-                exploringSpot = null;
-                if (blocksMined % SAVE_SPOTS_EVERY == 0) MiningSpotStore.save();
-            }
-            MinerLog.log("mined " + target.kind() + " at " + MinerLog.pos(target.pos()) + " in "
-                    + (System.currentTimeMillis() - phaseStartedAt) + "ms, now "
-                    + blockName(client, target.pos()) + " (total " + blocksMined + ")");
+            recordBreak(client);
             enterSearching("block broken");
             return;
         }
@@ -417,6 +448,7 @@ public final class BlockMiner {
                 candidates.size(), live.size(), veins.size(), skipUntil.size(), (System.nanoTime() - started) / 1e6));
 
         if (veins.isEmpty()) {
+            if (waitForRegen("no other ore in the area")) return;
             if (exploreRemembered(client, "no ore in the area is visible")) return;
             if (noVeinSince == 0L) noVeinSince = now;
             if (!noVeinNoticeSent && now - noVeinSince > NO_VEIN_NOTICE_MS) {
@@ -451,11 +483,16 @@ public final class BlockMiner {
                 badSpots.keySet(), area, MAX_VEINS_RANKED, preferTitanium() ? TITANIUM_SPOT_WEIGHT : 1.0);
         MinerLog.log(String.format("ranked %d spots from %d veins in %.1fms", plans.size(), natural.size(),
                 (System.nanoTime() - planStarted) / 1e6));
+        if (regenFallback) {
+            plans = new ArrayList<>(plans);
+            plans.removeIf(p -> p.reachable() < MIN_ORE_TO_MOVE);
+        }
         for (int i = 0; i < Math.min(3, plans.size()); i++) {
             MiningSpotPlanner.Plan p = plans.get(i);
             MinerLog.log(String.format("  #%d spot %s reaches %d ore, %.1f away, score %.2f",
                     i + 1, MinerLog.pos(p.spot()), p.reachable(), p.distance(), p.score()));
         }
+        if (plans.isEmpty() && waitForRegen("no other spot reaches " + MIN_ORE_TO_MOVE + "+ ore")) return;
         if (plans.isEmpty()) {
             MinerLog.log("no standing spot reaches any of the " + natural.size() + " nearest veins, skipping them");
             for (MiningVeins.Vein vein : natural) {
@@ -475,6 +512,14 @@ public final class BlockMiner {
         fallbackPlans.remove(chosen);
         MinerLog.log("chose spot " + MinerLog.pos(chosen.spot()) + " (" + chosen.reachable() + " ore in reach)");
         startPlan(client, chosen);
+    }
+
+    private static boolean waitForRegen(String why) {
+        if (!regenFallback) return false;
+        regenFallback = false;
+        MinerLog.log(why + ", waiting up to " + REGEN_WAIT_MS + "ms for the last spot to regenerate");
+        setPhase(Phase.REGEN_WAIT);
+        return true;
     }
 
     private static void startPlan(Minecraft client, MiningSpotPlanner.Plan plan) {
