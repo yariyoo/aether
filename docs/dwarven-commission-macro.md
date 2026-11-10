@@ -8,12 +8,16 @@ the maintainer directly and win over anything observed.
 
 - **spec** Do every commission type: area mithril and titanium, Mithril Miner, Titanium Miner, Goblin Slayer,
   Glacite Walker Slayer, Treasure Hoarder Puncher, Star Sentry Puncher, Goblin Raid Slayer, and any new ones.
-- **spec** Event commissions (Goblin Raid Slayer, Star Sentry Puncher, ...) are never prioritised and never
-  hunted for. Do them only when the event is happening where the macro already is: if it runs into a Goblin
-  Raid, it takes part.
+- **spec** Event commissions (Goblin Raid Slayer, ...) are never prioritised and never hunted for. Do them only
+  when the event is happening where the macro already is: if it runs into a Goblin Raid, it takes part.
+  Whether Star Sentry Puncher counts as an event commission is not confirmed yet.
 - **spec** Pick the commission that is fastest to reach. Working on two at once only happens by luck when a
   new commission lands near the current one; do not aim for it.
 - **spec** Claim with the Royal Pigeon. Find it by name in the hotbar, never assume a slot.
+- **spec** Later, not now: without a Royal Pigeon, walk to the nearest Emissary to claim.
+- **spec** Mining spots are not fixed: go to the best and nearest spot, which can be one of the spots Polinex
+  used (table below) but does not have to be.
+- **spec** Fight with the best weapon available in the hotbar, not a fixed item.
 - **spec** Travel with the fastest mix of what the player has:
   - no Aspect of the Void: walk
   - Aspect of the Void: walk plus AOTV teleports
@@ -29,6 +33,8 @@ the maintainer directly and win over anything observed.
 - Switch to the Royal Pigeon, right-click it, switch back to the drill straight away (before the menu opens).
 - In the `Commissions` menu, right-click (button 1) the finished commission in slots 11-15; it is replaced
   by a new one whose name ends in ` NEW`.
+- A finished commission's lore ends with `COMPLETED` and `Click to claim rewards!`; unfinished ones end with
+  `Progress` and a percentage.
 
 ### Progress
 - Tab list `Commissions:` section, one line per commission: `Name: 12.4%` or `Name: DONE`, refreshed about
