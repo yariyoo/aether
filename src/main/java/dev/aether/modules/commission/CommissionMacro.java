@@ -2,11 +2,14 @@ package dev.aether.modules.commission;
 
 import dev.aether.macro.MacroState;
 import dev.aether.macro.MacroStateManager;
+import dev.aether.modules.gear.GearManager;
 import dev.aether.modules.mining.BlockMiner;
 import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.util.ClientUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.Level;
 
 import java.util.HashMap;
 import java.util.List;
@@ -21,6 +24,8 @@ public final class CommissionMacro {
     private static final long UNSUPPORTED_NOTICE_MS = 30_000L;
     private static final long TRAVEL_LOG_MS = 2000L;
     private static final long TRAVEL_STUCK_MS = 5000L;
+    // etherwarp travel can stand still while it lines up the next warp
+    private static final long ETHERWARP_STUCK_MS = 10_000L;
     private static final int MAX_TRAVEL_ATTEMPTS = 3;
     private static final double SPOT_ARRIVAL = 2.0;
     private static final long ZONE_LOG_MS = 30_000L;
@@ -48,6 +53,7 @@ public final class CommissionMacro {
     private static long travelLogAt;
     private static int travelAttempts;
     private static boolean travelToSpot;
+    private static boolean travelByEtherwarp;
     private static double lastProgress;
     private static long lastProgressAt;
     private static int minedAtProgress;
@@ -242,13 +248,19 @@ public final class CommissionMacro {
         travelBest = Math.sqrt(client.player.blockPosition().distSqr(goal));
         travelProgressAt = System.currentTimeMillis();
         travelLogAt = travelProgressAt;
-        CommissionLog.log(String.format("walking to %s at %s, %.0f blocks (attempt %d)", task.area().name(),
-                goal.toShortString(), travelBest, travelAttempts + 1));
+        travelByEtherwarp = GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(client) >= 0;
+        CommissionLog.log(String.format("%s to %s at %s, %.0f blocks (attempt %d)",
+                travelByEtherwarp ? "etherwarping and walking" : "walking (no etherwarp AOTV in hotbar)",
+                task.area().name(), goal.toShortString(), travelBest, travelAttempts + 1));
         enter(Step.TRAVELING, "travel to " + task.area().name());
-        PathfindingManager.startConfiguredWalk(client, goal.getX(), goal.getY(), goal.getZ(),
-                () -> result.compareAndSet(WALK_PENDING, WALK_DONE),
-                () -> result.compareAndSet(WALK_PENDING, WALK_FAILED),
-                true, 1.0, false, true);
+        Runnable done = () -> result.compareAndSet(WALK_PENDING, WALK_DONE);
+        Runnable failed = () -> result.compareAndSet(WALK_PENDING, WALK_FAILED);
+        if (travelByEtherwarp) {
+            PathfindingManager.startConfiguredEtherwarp(client, goal.getX(), goal.getY(), goal.getZ(), done, failed);
+        } else {
+            PathfindingManager.startConfiguredWalk(client, goal.getX(), goal.getY(), goal.getZ(), done, failed,
+                    true, 1.0, false, true);
+        }
     }
 
     private static void tickTraveling(Minecraft client) {
@@ -279,14 +291,17 @@ public final class CommissionMacro {
         }
         String problem = null;
         if (result == WALK_FAILED) problem = "no complete walkable path";
-        else if (now - travelProgressAt > TRAVEL_STUCK_MS) problem = "no progress for " + (now - travelProgressAt) + "ms";
+        else if (now - travelProgressAt > (travelByEtherwarp ? ETHERWARP_STUCK_MS : TRAVEL_STUCK_MS)) {
+            problem = "no progress for " + (now - travelProgressAt) + "ms";
+        }
         else if (now - stepStartedAt > TRAVEL_TIMEOUT_MS) problem = "timed out";
         if (problem == null) return;
 
         if (result != WALK_FAILED) PathfindingManager.stop();
         travelAttempts++;
-        CommissionLog.log(String.format("walk to %s failed at %s: %s, %.0f blocks left", task.area().name(),
-                feet.toShortString(), problem, remaining));
+        CommissionLog.log(String.format("%s to %s failed at %s: %s, %.0f blocks left", travelByEtherwarp
+                ? "etherwarp" : "walk", task.area().name(), feet.toShortString(), problem, remaining));
+        CommissionLog.log("  around the player: " + describeSurroundings(client));
         if (travelAttempts < MAX_TRAVEL_ATTEMPTS) {
             startTravel(client, task);
             return;
@@ -354,6 +369,25 @@ public final class CommissionMacro {
             CommissionLog.log("miner stopped on its own while on " + current.commission() + ", restarting it");
             startWorking(client, current);
         }
+    }
+
+    // what is in front of the player at foot and head height, to see what the walker ran into
+    private static String describeSurroundings(Minecraft client) {
+        var player = client.player;
+        var level = client.level;
+        BlockPos feet = player.blockPosition();
+        var facing = player.getDirection();
+        BlockPos ahead = feet.relative(facing);
+        return String.format("facing %s, onGround %s, horizontalCollision %s, feet %s, head %s, ahead feet %s, "
+                        + "ahead head %s, ahead above %s, below %s, ahead below %s",
+                facing.getName(), player.onGround(), player.horizontalCollision,
+                blockName(level, feet), blockName(level, feet.above()),
+                blockName(level, ahead), blockName(level, ahead.above()), blockName(level, ahead.above(2)),
+                blockName(level, feet.below()), blockName(level, ahead.below()));
+    }
+
+    private static String blockName(Level level, BlockPos pos) {
+        return BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).getBlock()).getPath();
     }
 
     private static Commission find(List<Commission> commissions, String name) {
