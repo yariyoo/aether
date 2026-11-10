@@ -782,5 +782,12 @@
   "text.aether.mining": "Mining",
   "text.aether.dwarven_mines": "Dwarven Mines",
   "text.aether.how_the_miner_handles_stuck_blocks": "How the miner handles stuck blocks",
-  "text.aether.run_aether_miner_to_start_or_stop_it_finds_ore_anywhere_in_loaded_chunks_and_walks_to_the_nearest_vein": "Run /aether miner to start or stop. It finds ore anywhere in loaded chunks and walks to the nearest vein."
+  "text.aether.run_aether_miner_to_start_or_stop_it_finds_ore_anywhere_in_loaded_chunks_and_walks_to_the_nearest_vein": "Run /aether miner to start or stop. It finds ore anywhere in loaded chunks and walks to the nearest vein.",
+  "text.aether.commissions": "Commissions",
+  "text.aether.dwarven_mines_commissions": "Dwarven Mines commissions",
+  "text.aether.claiming": "Claiming",
+  "text.aether.claim_finished_commissions_with_the_royal_pigeon": "Claim finished commissions with the Royal Pigeon",
+  "text.aether.auto_claim": "Auto Claim",
+  "text.aether.commands": "Commands",
+  "text.aether.aether_commissions_lists_your_commissions_aether_commissions_claim_claims_finished_ones_now": "/aether commissions lists your commissions. /aether commissions claim claims finished ones now."
 }

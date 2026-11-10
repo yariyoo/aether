@@ -1,5 +1,6 @@
 package dev.aether.modules.mining;
 
+import dev.aether.modules.commission.CommissionClaimer;
 import dev.aether.config.AetherConfig;
 import dev.aether.macro.MacroInput;
 import dev.aether.macro.MacroState;
@@ -175,6 +176,10 @@ public final class BlockMiner {
 
         if (System.identityHashCode(client.level) != levelIdentity) {
             stop(client, true, "world changed");
+            return;
+        }
+        if (CommissionClaimer.isBusy()) {
+            releaseAttack(client);
             return;
         }
         if (client.gui.screen() != null && phase != Phase.PATHING) {

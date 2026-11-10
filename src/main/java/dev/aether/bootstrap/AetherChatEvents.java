@@ -1,5 +1,6 @@
 package dev.aether.bootstrap;
 
+import dev.aether.modules.commission.CommissionClaimer;
 import dev.aether.modules.recorder.GameplayRecorder;
 import dev.aether.config.AetherConfig;
 import dev.aether.config.ConfigHelpers;
@@ -51,6 +52,7 @@ public final class AetherChatEvents {
             String lowerPlainText = plainText.toLowerCase();
 
             GameplayRecorder.onGameMessage(plainText, overlay);
+            if (!overlay) CommissionClaimer.onChat(plainText);
             MetalDetectorSolver.onGameMessage(Minecraft.getInstance(), plainText, overlay);
 
             if (overlay) {

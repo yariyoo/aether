@@ -4,6 +4,7 @@ dev.aether.ui.providers.modules.RewarpRegistryProvider
 dev.aether.ui.providers.modules.PestManagerRegistryProvider
 dev.aether.ui.providers.modules.MiningRegistryProvider
 dev.aether.ui.providers.modules.BlockMinerRegistryProvider
+dev.aether.ui.providers.modules.CommissionRegistryProvider
 dev.aether.ui.providers.modules.GearRegistryProvider
 dev.aether.ui.providers.modules.VisitorRegistryProvider
 dev.aether.ui.providers.modules.AutoSprayonatorRegistryProvider

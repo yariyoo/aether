@@ -560,6 +560,7 @@ public final class AetherConfig {
                         "metalDetectorBackpackBlacklist",
                         Collections.emptyList(),
                         String.class);
+        public static final BooleanEntry COMMISSION_AUTO_CLAIM = Config.bool("commissionAutoClaim", false);
         public static final BooleanEntry MINER_GRAY_MITHRIL = Config.bool("minerGrayMithril", true);
         public static final BooleanEntry MINER_GREEN_MITHRIL = Config.bool("minerGreenMithril", true);
         public static final BooleanEntry MINER_BLUE_MITHRIL = Config.bool("minerBlueMithril", true);

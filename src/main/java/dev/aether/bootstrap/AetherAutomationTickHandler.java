@@ -1,5 +1,6 @@
 package dev.aether.bootstrap;
 
+import dev.aether.modules.commission.CommissionClaimer;
 import dev.aether.config.AetherConfig;
 import dev.aether.config.ConfigHelpers;
 import dev.aether.macro.farming.FarmingMacroManager;
@@ -164,6 +165,7 @@ public final class AetherAutomationTickHandler {
         PestAotvManager.updatePreparationAotv(client);
         PestDestroyer.update();
         MetalDetectorSolver.update();
+        CommissionClaimer.update();
         BlockMiner.update();
         VacuumParticleDebug.onClientTick();
     }

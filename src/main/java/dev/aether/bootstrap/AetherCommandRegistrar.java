@@ -1,5 +1,6 @@
 package dev.aether.bootstrap;
 
+import dev.aether.modules.commission.CommissionClaimer;
 import dev.aether.modules.recorder.GameplayRecorder;
 import com.mojang.brigadier.arguments.FloatArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
@@ -158,7 +159,24 @@ public final class AetherCommandRegistrar {
                                         sendMovementHelp();
                                         return 1;
                                     })
-                                    .then(ClientCommands.literal("record")
+                                    .then(ClientCommands.literal("commissions")
+                                    .executes(ctx -> {
+                                        var list = CommissionClaimer.currentCommissions(Minecraft.getInstance());
+                                        if (list.isEmpty()) {
+                                            ClientUtils.sendMessage("\u00A7eNo commissions found in the tab list.", false);
+                                        }
+                                        for (var c : list) {
+                                            ClientUtils.sendMessage("\u00A77" + c.name() + ": \u00A7f"
+                                                    + (c.done() ? "DONE" : String.format("%.1f%%", c.progress() * 100)), false);
+                                        }
+                                        return 1;
+                                    })
+                                    .then(ClientCommands.literal("claim")
+                                            .executes(ctx -> {
+                                                CommissionClaimer.requestClaim("command");
+                                                return 1;
+                                            })))
+                            .then(ClientCommands.literal("record")
                                             .executes(ctx -> {
                                                 MovementPlaybackManager.startRecording();
                                                 return 1;
