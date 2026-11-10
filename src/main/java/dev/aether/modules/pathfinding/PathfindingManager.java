@@ -521,6 +521,11 @@ public final class PathfindingManager {
 
     public static boolean isNavigating() { return navigating; }
 
+    // still planning a route, so not moving yet is expected
+    public static boolean isSearching() {
+        return etherwarpSearchInProgress || currentPathfinder != null;
+    }
+
     public static boolean isFlyingNavigation() {
         return activeMode == NavigationMode.FLY;
     }
