@@ -3,6 +3,8 @@ package dev.aether.modules.commission;
 import dev.aether.macro.MacroState;
 import dev.aether.macro.MacroStateManager;
 import dev.aether.modules.gear.GearManager;
+import dev.aether.modules.commission.route.RouteFollower;
+import dev.aether.modules.commission.route.RouteGraph;
 import dev.aether.modules.mining.BlockMiner;
 import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.util.ClientUtils;
@@ -28,6 +30,7 @@ public final class CommissionMacro {
     private static final long ETHERWARP_STUCK_MS = 10_000L;
     private static final long ETHERWARP_PLAN_LIMIT_MS = 20_000L;
     private static final int MAX_TRAVEL_ATTEMPTS = 5;
+    private static final double ROUTE_GOAL_RADIUS = 3.0;
     private static final double SPOT_ARRIVAL = 2.0;
     private static final long ZONE_LOG_MS = 30_000L;
     // tab progress refreshes about every 3s, so this many blocks with no gain means they are not counting
@@ -55,12 +58,17 @@ public final class CommissionMacro {
     private static int travelAttempts;
     private static boolean travelToSpot;
     private static boolean travelByEtherwarp;
+    private static boolean travelByRoute;
+    private static boolean routeFailedThisTrip;
+    private static final RouteFollower route = new RouteFollower();
     private static boolean nextLegWalks;
     private static boolean planReadyLogged;
     private static double lastProgress;
     private static long lastProgressAt;
     private static int minedAtProgress;
     private static long zoneLogAt;
+    private static String lastConsidered = "";
+    private static long lastConsideredAt;
     private static final Map<String, Long> skipUntil = new HashMap<>();
 
     private CommissionMacro() {}
@@ -104,6 +112,7 @@ public final class CommissionMacro {
         running = false;
         CommissionLog.log("stopped (" + reason + ")");
         if (step == Step.TRAVELING) PathfindingManager.stop();
+        route.stop(client);
         BlockMiner.stopManaged(client);
         current = null;
         travelAttempts = 0;
@@ -132,10 +141,14 @@ public final class CommissionMacro {
             CommissionLog.log("world changed, choosing again");
             levelIdentity = System.identityHashCode(client.level);
             if (step == Step.TRAVELING) PathfindingManager.stop();
+            route.stop(client);
             BlockMiner.stopManaged(client);
             enter(Step.CHOOSING, "world changed");
         }
-        if (CommissionClaimer.isBusy()) return;
+        if (CommissionClaimer.isBusy()) {
+            route.pause(client);
+            return;
+        }
 
         skipUntil.values().removeIf(until -> until <= System.currentTimeMillis());
         switch (step) {
@@ -196,14 +209,19 @@ public final class CommissionMacro {
                 considered.append(status).append(" (skipped after a failure); ");
                 continue;
             }
-            double distance = task.area() == null ? 0.0 : Math.sqrt(feet.distSqr(task.area().anchor()));
-            considered.append(status).append(String.format(" %.0f away; ", distance));
+            double distance = task.area() == null || task.area().contains(feet) ? 0.0 : travelSeconds(client, task);
+            considered.append(status).append(String.format(" %.0fs away; ", distance));
             if (distance < bestDistance) {
                 bestDistance = distance;
                 best = task;
             }
         }
-        CommissionLog.log("choosing from: " + considered);
+        String summary = considered.toString();
+        if (!summary.equals(lastConsidered) || now - lastConsideredAt >= ZONE_LOG_MS) {
+            lastConsidered = summary;
+            lastConsideredAt = now;
+            CommissionLog.log("choosing from: " + summary);
+        }
 
         // ore mined inside an area also counts for the anywhere commissions, so one trip does both
         if (best != null && best.area() == null) {
@@ -213,7 +231,7 @@ public final class CommissionMacro {
                 CommissionTask task = CommissionTask.of(c.name());
                 if (!task.isMining() || task.area() == null || skipUntil.containsKey(c.name())) continue;
                 if (task.ores().stream().noneMatch(best.ores()::contains)) continue;
-                double distance = Math.sqrt(feet.distSqr(task.area().anchor()));
+                double distance = task.area().contains(feet) ? 0.0 : travelSeconds(client, task);
                 if (distance < coveringDistance) {
                     coveringDistance = distance;
                     covering = task;
@@ -236,17 +254,42 @@ public final class CommissionMacro {
         }
         current = best;
         CommissionLog.log("chose " + best.commission() + (best.area() == null ? " (anywhere)"
-                : String.format(" in %s, %.0f blocks away", best.area().name(), bestDistance)));
+                : String.format(" in %s, about %.0fs away", best.area().name(), bestDistance)));
 
         if (best.area() != null && !best.area().contains(feet)) {
+            routeFailedThisTrip = false;
             startTravel(client, best);
         } else {
             startWorking(client, best);
         }
     }
 
+    // seconds by the recorded routes, or a slow walking guess when none fit
+    private static double travelSeconds(Minecraft client, CommissionTask task) {
+        BlockPos anchor = task.area().anchor();
+        var from = client.player.position();
+        RouteGraph.Plan plan = RouteGraph.dwarvenMines().plan(new RouteGraph.Point(from.x, from.y, from.z),
+                new RouteGraph.Point(anchor.getX() + 0.5, anchor.getY(), anchor.getZ() + 0.5), ROUTE_GOAL_RADIUS,
+                RouteFollower.availableMoves(client), java.util.Set.of());
+        return plan != null ? plan.seconds() : Math.sqrt(client.player.blockPosition().distSqr(anchor)) / 3.0;
+    }
+
     private static void startTravel(Minecraft client, CommissionTask task) {
         BlockPos goal = task.area().anchor();
+        if (!routeFailedThisTrip) {
+            RouteGraph.Point target = new RouteGraph.Point(goal.getX() + 0.5, goal.getY(), goal.getZ() + 0.5);
+            double radius = travelToSpot ? SPOT_ARRIVAL : ROUTE_GOAL_RADIUS;
+            travelBest = Math.sqrt(client.player.blockPosition().distSqr(goal));
+            travelLogAt = System.currentTimeMillis();
+            if (route.start(client, target, radius, task.area().name())) {
+                travelByRoute = true;
+                enter(Step.TRAVELING, "recorded route to " + task.area().name());
+                return;
+            }
+            routeFailedThisTrip = true;
+            CommissionLog.log("no recorded route fits (" + route.failure() + "), using the pathfinder");
+        }
+        travelByRoute = false;
         AtomicInteger result = new AtomicInteger(WALK_PENDING);
         walkResult = result;
         travelBest = Math.sqrt(client.player.blockPosition().distSqr(goal));
@@ -258,7 +301,8 @@ public final class CommissionMacro {
         nextLegWalks = false;
         planReadyLogged = false;
         CommissionLog.log(String.format("%s to %s at %s, %.0f blocks (attempt %d)",
-                travelByEtherwarp ? "etherwarping and walking" : "walking (no etherwarp AOTV in hotbar)",
+                travelByEtherwarp ? "etherwarping and walking" : hasEtherwarp
+                        ? "walking this leg (etherwarp stalled last time)" : "walking (no etherwarp aotv in the hotbar)",
                 task.area().name(), goal.toShortString(), travelBest, travelAttempts + 1));
         enter(Step.TRAVELING, "travel to " + task.area().name());
         Runnable done = () -> result.compareAndSet(WALK_PENDING, WALK_DONE);
@@ -272,6 +316,10 @@ public final class CommissionMacro {
     }
 
     private static void tickTraveling(Minecraft client) {
+        if (travelByRoute) {
+            tickRoute(client);
+            return;
+        }
         CommissionTask task = current;
         BlockPos feet = client.player.blockPosition();
         long now = System.currentTimeMillis();
@@ -287,7 +335,8 @@ public final class CommissionMacro {
             startWorking(client, task);
             return;
         }
-        boolean planning = PathfindingManager.isSearching();
+        // the walker also plans while replanning mid-walk, which must still count toward being stuck
+        boolean planning = PathfindingManager.isSearching() && !planReadyLogged;
         if (planning) {
             // planning time is not being stuck; restart the stall clock once it moves
             travelProgressAt = now;
@@ -343,6 +392,37 @@ public final class CommissionMacro {
         enter(Step.CHOOSING, "travel failed");
     }
 
+    private static void tickRoute(Minecraft client) {
+        CommissionTask task = current;
+        BlockPos feet = client.player.blockPosition();
+        long now = System.currentTimeMillis();
+        double remaining = Math.sqrt(feet.distSqr(task.area().anchor()));
+        boolean arrived = travelToSpot ? remaining <= SPOT_ARRIVAL : task.area().contains(feet);
+        if (arrived) {
+            route.stop(client);
+            CommissionLog.log(String.format("reached %s at %s by recorded route after %dms, sidebar zone %s",
+                    task.area().name(), feet.toShortString(), now - stepStartedAt, sidebarZone()));
+            travelAttempts = 0;
+            travelToSpot = false;
+            startWorking(client, task);
+            return;
+        }
+        route.tick(client);
+        if (now - travelLogAt >= TRAVEL_LOG_MS) {
+            travelLogAt = now;
+            CommissionLog.log(String.format("route: at %s, %.0f blocks to %s, %dms in", feet.toShortString(),
+                    remaining, task.area().name(), now - stepStartedAt));
+        }
+        RouteFollower.Status status = route.status();
+        if (status == RouteFollower.Status.RUNNING && now - stepStartedAt <= TRAVEL_TIMEOUT_MS) return;
+        String why = status == RouteFollower.Status.ARRIVED ? "route ended " + String.format("%.0f", remaining)
+                + " blocks short of the area" : status == RouteFollower.Status.FAILED ? route.failure() : "timed out";
+        route.stop(client);
+        routeFailedThisTrip = true;
+        CommissionLog.log("recorded route to " + task.area().name() + " didn't get there (" + why + "), using the pathfinder");
+        startTravel(client, task);
+    }
+
     private static void startWorking(Minecraft client, CommissionTask task) {
         boolean started = BlockMiner.startManaged(client, task.ores(), task.area());
         if (!started) {
@@ -389,6 +469,7 @@ public final class CommissionMacro {
             BlockMiner.stopManaged(client);
             if (current.area() != null) {
                 travelToSpot = true;
+                routeFailedThisTrip = false;
                 startTravel(client, current);
             } else {
                 enter(Step.CHOOSING, "anywhere mining was not counting");
