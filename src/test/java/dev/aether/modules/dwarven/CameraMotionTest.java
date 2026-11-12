@@ -20,14 +20,15 @@ class CameraMotionTest {
     }
 
     @Test
-    void arrivesExactlyOnTarget() {
+    // a normal turn stops once inside its tolerance rather than jumping the last bit in one frame
+    void arrivesWithinToleranceAndStops() {
         CameraMotion motion = new CameraMotion();
         motion.reset(0, 0);
         motion.aim(0, 0, 90, -30, PROFILE);
         run(motion, 1 / 60f, 600);
         assertTrue(motion.arrived());
-        assertEquals(90, motion.yaw(), 1e-3);
-        assertEquals(-30, motion.pitch(), 1e-3);
+        assertEquals(90, motion.yaw(), PROFILE.tolerance());
+        assertEquals(-30, motion.pitch(), PROFILE.tolerance());
         assertEquals(0, motion.speed(), 1e-3);
     }
 
@@ -102,12 +103,12 @@ class CameraMotionTest {
         motion.aim(motion.yaw(), motion.pitch(), 120, 25, PROFILE);
         assertEquals(before, motion.speed(), 1e-3);
         run(motion, 1 / 60f, 600);
-        assertEquals(120, motion.yaw(), 1e-3);
-        assertEquals(25, motion.pitch(), 1e-3);
+        assertEquals(120, motion.yaw(), PROFILE.tolerance());
+        assertEquals(25, motion.pitch(), PROFILE.tolerance());
     }
 
     @Test
-    void curvedMovesStillLandExactlyAndPitchStaysLegal() {
+    void curvedMovesStillLandAndPitchStaysLegal() {
         CameraMotion motion = new CameraMotion();
         motion.reset(0, 80);
         motion.aim(0, 80, 150, 89, PROFILE.withCurve(1f));
@@ -116,7 +117,7 @@ class CameraMotionTest {
             assertTrue(motion.pitch() <= 90f && motion.pitch() >= -90f);
         }
         assertTrue(motion.arrived());
-        assertEquals(89, motion.pitch(), 1e-3);
+        assertEquals(89, motion.pitch(), PROFILE.tolerance());
     }
 
     @Test
@@ -126,6 +127,6 @@ class CameraMotionTest {
         motion.aim(0, 0, 170, 0, PROFILE);
         motion.step(5f);
         assertTrue(motion.arrived());
-        assertEquals(170, motion.yaw(), 1e-3);
+        assertEquals(170, motion.yaw(), PROFILE.tolerance());
     }
 }
