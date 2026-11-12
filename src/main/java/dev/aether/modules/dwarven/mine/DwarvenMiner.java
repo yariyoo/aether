@@ -58,6 +58,7 @@ public final class DwarvenMiner {
     private Set<OreKind> wanted = Set.of();
     private boolean preferTitanium;
     private String area;
+    private String zone = "";
     private long phaseSince;
     private BlockPos target;
     private OreKind targetKind;
@@ -84,6 +85,10 @@ public final class DwarvenMiner {
 
     public DwarvenMiner(OreScanner scanner) {
         this.scanner = scanner;
+    }
+
+    public void zone(String zone) {
+        this.zone = zone == null ? "" : zone;
     }
 
     public Phase phase() {
@@ -202,7 +207,8 @@ public final class DwarvenMiner {
             return;
         }
         if (spot == null) {
-            spot = DwarvenStore.SPOTS.visit(client.player.blockPosition(), area, now);
+            // a spot is filed under the zone the scoreboard shows, which is what commissions go by
+            spot = DwarvenStore.SPOTS.visit(client.player.blockPosition(), zone.isEmpty() ? area : zone, now);
             spotIdleSince = now;
         }
         if (AetherConfig.DWARVEN_PICKAXE_ABILITY.get() && abilityReady && now >= abilityBlockedUntil) {

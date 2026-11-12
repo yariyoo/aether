@@ -103,6 +103,7 @@ public final class DwarvenCommissionMacro {
     public static void stop(Minecraft client, String reason, boolean stopMacroState) {
         pendingStart = false;
         if (stage == Stage.OFF) return;
+        if (client == null) client = Minecraft.getInstance();
         miner.stop(client);
         navigator.stop(client);
         claims.reset();
@@ -433,6 +434,8 @@ public final class DwarvenCommissionMacro {
     }
 
     private static boolean commissionChanged(Minecraft client) {
+        // an empty read is the tab list flickering, not every commission vanishing at once
+        if (commissions.isEmpty()) return false;
         DwarvenCommission mine = find(current.name());
         long now = System.currentTimeMillis();
         if (mine != null && !mine.done()) {
@@ -463,6 +466,7 @@ public final class DwarvenCommissionMacro {
             miner.pause(client);
             return;
         }
+        miner.zone(zone);
         miner.tick(client);
         if (current.progress() > lastProgress + 1e-6) {
             lastProgress = current.progress();
