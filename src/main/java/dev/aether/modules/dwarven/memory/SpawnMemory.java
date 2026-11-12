@@ -84,7 +84,7 @@ public final class SpawnMemory {
             Map<Long, Spot> forMob = spots.get(key(m));
             if (forMob == null) continue;
             for (Spot s : forMob.values()) {
-                if (avoid.contains(s.pos) || now - s.lastEmpty < emptyRecheckMs) continue;
+                if (avoid.contains(s.pos) || s.lastEmpty > 0 && now - s.lastEmpty < emptyRecheckMs) continue;
                 double score = (0.5 + decayed(s, now)) / (1.0 + Math.sqrt(s.pos.distSqr(from)) / DISTANCE_SCALE);
                 if (score > bestScore) {
                     bestScore = score;
