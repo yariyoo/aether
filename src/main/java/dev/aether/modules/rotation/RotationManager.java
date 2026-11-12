@@ -327,11 +327,10 @@ public class RotationManager {
         steerMotion.step(stepMs / 1000.0f);
         float yaw = steerMotion.yaw();
         float pitch = steerMotion.pitch();
-        if (!steerMotion.arrived()) {
-            // the motion keeps its exact angle; only what reaches the player is snapped to mouse steps
-            yaw = applyGcd(yaw, mc.player.getYRot());
-            pitch = applyGcd(pitch, mc.player.getXRot(), -90.0f, 90.0f);
-        }
+        // the motion keeps its exact angle; only what reaches the player is snapped to mouse steps, the last one too,
+        // so a turn ends on a step like every frame before it instead of a sub-step jump
+        yaw = applyGcd(yaw, mc.player.getYRot());
+        pitch = applyGcd(pitch, mc.player.getXRot(), -90.0f, 90.0f);
         mc.player.setYRot(yaw);
         mc.player.setXRot(pitch);
         mc.player.yRotO = yaw;

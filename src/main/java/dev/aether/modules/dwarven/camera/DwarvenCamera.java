@@ -6,6 +6,8 @@ import dev.aether.config.AetherConfig;
 public final class DwarvenCamera {
     public enum Activity { MINING, NAVIGATION, ETHERWARP, COMBAT }
 
+    private static final float MINING_PACE = 1.4f;
+
     private DwarvenCamera() {}
 
     // the same camera, turning about twice as fast, for when smooth ranged aiming is off
@@ -34,7 +36,11 @@ public final class DwarvenCamera {
     public static CameraProfile profile(Activity activity) {
         CameraProfile base = profile();
         return switch (activity) {
-            case MINING -> base.scaled(AetherConfig.DWARVEN_CAM_MINING_SPEED.get());
+            // block-to-block turns are short; a bend or a random change of pace on them reads as wobble, and the
+            // 22:03 recording measured them at 39 deg/s against 56 for a clean run, so they get a faster base
+            case MINING -> new CameraProfile(base.mode(), base.easing(), base.minSpeed(), base.maxSpeed(), base.acceleration(),
+                    base.deceleration(), base.smoothing(), 0f, base.tolerance(), base.preventOvershoot(), base.jerk(),
+                    Math.min(base.variation(), 0.1f)).scaled(AetherConfig.DWARVEN_CAM_MINING_SPEED.get() * MINING_PACE);
             case NAVIGATION -> base.scaled(AetherConfig.DWARVEN_CAM_NAV_SPEED.get());
             case COMBAT -> base.scaled(AetherConfig.DWARVEN_CAM_COMBAT_SPEED.get()).withMode(CameraProfile.Mode.ADAPTIVE);
             case ETHERWARP -> new CameraProfile(CameraProfile.Mode.PRECISION, base.easing(), base.minSpeed(), base.maxSpeed(), base.acceleration(),

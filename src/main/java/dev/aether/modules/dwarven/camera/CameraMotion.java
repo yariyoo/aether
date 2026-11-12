@@ -101,7 +101,10 @@ public final class CameraMotion {
         float errorPitch = targetPitch - pitch;
         float distance = (float) Math.sqrt(errorYaw * errorYaw + errorPitch * errorPitch);
         if (distance <= profile.tolerance() && speed() <= profile.minSpeed() * 1.5f) {
-            finish();
+            // jumping the last fraction of a degree in one frame shows as a twitch at the end of every turn; only
+            // precision aims, where the exact angle matters, close that gap
+            if (profile.mode() == CameraProfile.Mode.PRECISION) finish();
+            else settle();
             return;
         }
         float dirYaw = distance > 1e-4f ? errorYaw / distance : 0f;
@@ -179,6 +182,13 @@ public final class CameraMotion {
             case CUBIC -> p < 0.5f ? Math.max(0.2f, 4f * p * p) : Math.max(0f, 4f * (1f - p) * (1f - p));
             case SMOOTHERSTEP -> Math.max(p < 0.5f ? 0.2f : 0f, 16f * p * p * (1f - p) * (1f - p));
         };
+    }
+
+    private void settle() {
+        yawSpeed = 0f;
+        pitchSpeed = 0f;
+        accel = 0f;
+        arrived = true;
     }
 
     private void finish() {

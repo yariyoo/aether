@@ -671,7 +671,7 @@ public final class AetherConfig {
         public static final FloatEntry DWARVEN_CAM_JERK = Config.floatVal("dwarvenCamJerk", 12000.0f).range(0.0f, 60000.0f);
         public static final BooleanEntry DWARVEN_CAM_VARIATION_ON = Config.bool("dwarvenCamVariationOn", true);
         public static final FloatEntry DWARVEN_CAM_VARIATION = Config.floatVal("dwarvenCamVariation", 0.3f).range(0.0f, 1.0f);
-        public static final FloatEntry DWARVEN_AIM_VARIATION = Config.floatVal("dwarvenAimVariation", 0.35f).range(0.0f, 1.0f);
+        public static final FloatEntry DWARVEN_AIM_VARIATION = Config.floatVal("dwarvenAimSpread", 0.0f).range(0.0f, 1.0f);
         public static final FloatEntry DWARVEN_CAM_MINING_SPEED = Config.floatVal("dwarvenCamMiningSpeed", 1.0f).range(0.3f, 3.0f);
         public static final FloatEntry DWARVEN_CAM_NAV_SPEED = Config.floatVal("dwarvenCamNavSpeed", 1.3f).range(0.3f, 3.0f);
         public static final FloatEntry DWARVEN_CAM_ETHERWARP_SPEED = Config.floatVal("dwarvenCamEtherwarpSpeed", 1.1f).range(0.3f, 3.0f);
