@@ -122,6 +122,52 @@ chosen for the most ore in reach). Already present under other names: Prefer Tel
 Route Learning (Learn And Reuse Walked Routes), Fast Target Switching (Combat Mode), Spawn Location Learning,
 Persistent Respawn Search.
 
+## Goblin Slayer combat pass
+
+Why goblins in view went unattacked, as far as the code shows:
+- Target selection rejected any goblin whose position the zone map attributed to another area. The zone map was
+  being taught stale names after every teleport (see performance-report.md), so real burrows goblins could be
+  filtered out, and the fighter kept searching and repositioning.
+- Nothing recorded why a scan found nothing, so the log couldn't show it.
+
+Now:
+- **Targets.** Visible goblins are fought wherever the zone map puts them; the area filter applies only to
+  destinations and spawn learning. Kill credit still drops a mob type whose kills never move the commission.
+- **Scan reports.** Each scan reports what it saw: no mobs, mobs but none of the wanted kinds, or eligible goblins
+  that are all unusable (no body under the tag, too far, ignored for now). Repeated filtering reaches the log as
+  `[GOBLIN] ...`.
+- **Weapon priority** follows the item's SkyBlock id first and the display name only as a fallback:
+  - any Hyperion first, plus a scrolled Valkyrie, Scylla or Astraea
+  - then Terminator
+  - then the hardest-hitting sword or shortbow
+  - then the mining tool
+  - low mana no longer hands over to the Terminator
+- **Hyperion.**
+  - Wither Impact is planned from the blocks: the teleport goes up to 10 blocks along the view, stops before a
+    block and lands on the floor.
+  - It counts the goblins within 6 blocks of the landing, and an in-place cast looking down is one of the options.
+    Clusters are preferred when that setting is on. No cast is planned onto a landing with nothing under it.
+  - A cast is checked by teleport, mana spent, or Hypixel's own "not enough mana" or cooldown message.
+  - Not enough mana switches to left-click melee with the same Hyperion, held until mana reaches the recovery
+    threshold, with a 1.5s minimum so the modes don't flicker.
+  - Repeated casts with no response suspend the ability for the failure cooldown.
+- **Terminator.**
+  - It shoots from range with line of sight, leads moving goblins, and aims above the target to allow for arrow drop.
+  - Every shot is checked for a new arrow appearing. Automatic input starts with right click, the shortbow's
+    documented "instantly shoots", and switches to left click after 3 shots with no arrow. If neither works, it
+    falls back to the next weapon.
+- **Melee and drill.** Melee range is a setting. Attack problems are reported: crosshair off the goblin, on another
+  entity, or input suppressed by another module.
+- **HUD.** Combat debug rows show the weapon, mode, target, distance, ability, mana fallback, input, failure reason
+  and confirmed kills, each with its own toggle.
+
+**Verified here.** `GoblinCombatTests`: the six priority combinations, item ids over names, in-place and cluster
+casts, out of range, a wall stopping the teleport, a ledge with no floor, and the mana and cooldown messages.
+
+**Not verified in game.** The Wither Impact blast radius (6 blocks, deliberately on the low side), real teleport
+landings, which click the Terminator fires on in practice (the arrow check decides at runtime), and Hypixel's
+exact refusal wording beyond the phrases matched.
+
 ## Known limits
 
 - Stop after X HOTM XP and HOTM XP per hour: the recorded claim rewards list Mithril Powder and Mining Exp, not HOTM
