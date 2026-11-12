@@ -100,6 +100,7 @@ public final class DwarvenFighter {
     private final Map<Integer, Long> ignored = new HashMap<>();
     private final Set<BlockPos> emptyThisRun = new HashSet<>();
     private final Map<Integer, String> names = new HashMap<>();
+    private final Map<Integer, BlockPos> lastPos = new HashMap<>();
     private final KillCredit credit = new KillCredit();
     private String area;
     private String zone = "";
@@ -192,6 +193,7 @@ public final class DwarvenFighter {
         weapon = null;
         weaponCheckedAt = 0;
         names.clear();
+        lastPos.clear();
         credit.reset();
         engagedMs = 0;
         engagedSince = System.currentTimeMillis();
@@ -703,7 +705,14 @@ public final class DwarvenFighter {
             boolean gone = mob == null || !mob.isAlive() || mob.isRemoved() || dead(client, mob);
             if (gone && attacks.recordDeath(e.id)) {
                 String type = names.get(e.id);
-                if (type != null) credit.killed(type, System.currentTimeMillis());
+                long at = System.currentTimeMillis();
+                if (type != null) credit.killed(type, at);
+                BlockPos where = mob != null ? mob.blockPosition() : lastPos.get(e.id);
+                if (type != null && where != null && AetherConfig.DWARVEN_SPAWN_MEMORY.get() && inHuntArea()
+                        && DwarvenStore.SPAWNS.killed(type, where, at)) {
+                    DwarvenLog.log("[LEARNING] " + (mobs.contains("Goblin") ? "Goblin hunting" : "Hunting") + " location verified by successful kill at "
+                            + where.toShortString());
+                }
                 dev.aether.modules.dwarven.DwarvenCommissionMacro.STATS.kill();
                 DwarvenLog.log("combat: kill confirmed after " + e.hits + (e.hits == 1 ? " hit" : " hits")
                         + String.format(" (one-hit kills %.0f%%, %d kills)", attacks.oneHitRate() * 100, attacks.kills()));
@@ -907,6 +916,7 @@ public final class DwarvenFighter {
             }
             // a goblin in view is fought wherever the zone map puts it; kill credit sorts out ones that don't count
             names.put(mob.getId(), tag.name);
+            lastPos.put(mob.getId(), mob.blockPosition());
             if (attacks.pending(mob.getId(), now, revisit)) pending++;
             double cost = targetCost(client, mob, distance, eye);
             if (attacks.pending(mob.getId(), now, revisit)) {
@@ -956,6 +966,26 @@ public final class DwarvenFighter {
             cost -= 4.0 * (eligibleNear(client, mob.position(), CLUSTER_RADIUS).size() - 1);
         }
         return cost;
+    }
+
+    // mobs with these names that can be gone after from where the player stands: alive, with a body under the tag, in
+    // range, and either in sight or close; used to stop travelling and fight when they are already here
+    public static int engageable(Minecraft client, Set<String> names, double range, double closeWithoutSight) {
+        if (client.level == null || client.player == null) return 0;
+        int n = 0;
+        for (Entity e : client.level.entitiesForRendering()) {
+            if (!(e instanceof ArmorStand stand) || !stand.hasCustomName() || stand.distanceTo(client.player) > range + 2.5) continue;
+            Tag tag = parse(stand.getCustomName());
+            if (tag == null || tag.health <= 0) continue;
+            boolean named = false;
+            for (String m : names) named |= m.equalsIgnoreCase(tag.name);
+            if (!named) continue;
+            LivingEntity mob = bodyUnder(client, stand);
+            if (mob == null || Math.abs(mob.getY() - client.player.getY()) > 10) continue;
+            double d = mob.distanceTo(client.player);
+            if (d <= range && (d <= closeWithoutSight || visible(client, mob.getBoundingBox().getCenter()))) n++;
+        }
+        return n;
     }
 
     // whether any living mob with one of these tag names is within range, used to tell if an event is happening here

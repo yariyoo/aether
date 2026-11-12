@@ -69,7 +69,16 @@ public final class DwarvenCommissionMacro {
     // a fight that moves the commission along keeps going; this long with no progress means the hunting ground is wrong
     private static final long FIGHT_STALL_MS = 90_000L;
     private static final double NEAR_HUNT_POINT = 24.0;
+    private static final double AT_HUNT_SPOT = 8.0;
+    private static final long EMPTY_SPOT_RECHECK_MS = 3 * 60_000L;
     private static final double RAID_SIGHT = 40.0;
+    // mobs this close, in sight or nearly touching, end a combat trip early: the hunt is already here
+    private static final double ENGAGE_RADIUS = 20.0;
+    private static final double ENGAGE_UNSEEN = 8.0;
+    private static final long ENGAGE_SCAN_MS = 250L;
+    // a trip that failed this close to its goal, in a place where the work counts, works from where it stopped
+    private static final double WORK_WHERE_STOPPED = 24.0;
+    private static long lastEngageScanAt;
     private static final long WRONG_ZONE_MS = 4000L;
     private static final Map<String, String> lastFailure = new HashMap<>();
     private static long wrongZoneSince;
@@ -293,6 +302,7 @@ public final class DwarvenCommissionMacro {
         BlockPos feet = client.player.blockPosition();
         // a stale zone line right after a teleport would teach the old zone's name for the new place
         if (ZONE.fresh(now) && client.player.onGround()) DwarvenStore.AREAS.observe(zone, feet);
+        if (ZONE.fresh(now)) navigator.region(zone);
         DwarvenStore.EMISSARIES.observe(client);
         if (AetherConfig.DWARVEN_LEARN_TRAILS.get()) DwarvenStore.TRAILS.walked(feet, client.player.onGround());
         if (now - lastSaveAt > SAVE_EVERY_MS) {
@@ -518,7 +528,15 @@ public final class DwarvenCommissionMacro {
     }
 
     // only a zone line that has caught up with the last teleport counts as evidence of being in the wrong place
+    // whether the current combat commission counts kills anywhere, so the zone line is no reason to leave or skip a place
+    private static boolean zoneFree(Objective o) {
+        if (o.kind() != Objective.Kind.COMBAT || current == null) return false;
+        CombatTarget combat = CombatTarget.of(current.name());
+        return combat != null && !combat.zoneBound();
+    }
+
     private static boolean wrongZone(Objective o) {
+        if (zoneFree(o)) return false;
         boolean placed = o.kind() == Objective.Kind.MINING || o.kind() == Objective.Kind.COMBAT;
         return placed && o.area() != null && ZONE.fresh(System.currentTimeMillis()) && !zone.equalsIgnoreCase(o.area());
     }
@@ -550,9 +568,11 @@ public final class DwarvenCommissionMacro {
         if (o.kind() == Objective.Kind.COMBAT) {
             CombatTarget combat = current == null ? null : CombatTarget.of(current.name());
             if (combat == null) return o.area() == null ? null : DwarvenStore.AREAS.bestPoint(o.area(), feet, List.of(), 0);
-            // a recorded fight spot only counts if it lies in the commission's area; a raid elsewhere leaves misleading ones
-            java.util.function.Predicate<BlockPos> inIt = p -> DwarvenStore.AREAS.allows(combat.area(), p);
-            BlockPos busiest = DwarvenStore.SPAWNS.best(combat.mobs(), feet, now, 0L, Set.of(), inIt);
+            // a recorded fight spot only counts if it lies in the commission's area; a raid elsewhere leaves misleading ones.
+            // a hunt that counts anywhere goes by what each place has produced instead, and passes over ones just found empty
+            java.util.function.Predicate<BlockPos> inIt = combat.zoneBound() ? p -> DwarvenStore.AREAS.allows(combat.area(), p) : p -> true;
+            long recheck = combat.zoneBound() ? 0L : EMPTY_SPOT_RECHECK_MS;
+            BlockPos busiest = DwarvenStore.SPAWNS.best(combat.mobs(), feet, now, recheck, triedSpots, inIt);
             if (busiest != null) return busiest;
             BlockPos hunt = HuntPoints.nearest(combat.mobs(), feet, inIt);
             if (hunt != null) return hunt;
@@ -571,8 +591,14 @@ public final class DwarvenCommissionMacro {
 
     private static boolean inArea(Objective o, BlockPos feet) {
         if (o.kind() == Objective.Kind.COMBAT) {
-            if (o.area() != null && ZONE.fresh(System.currentTimeMillis())) return zone.equalsIgnoreCase(o.area());
             CombatTarget combat = CombatTarget.of(current.name());
+            if (combat != null && !combat.zoneBound()) {
+                // here is good enough when the mobs are here, or a place they've been found is close
+                if (DwarvenFighter.engageable(Minecraft.getInstance(), combat.mobs(), ENGAGE_RADIUS, ENGAGE_UNSEEN) > 0) return true;
+                BlockPos spot = DwarvenStore.SPAWNS.best(combat.mobs(), feet, System.currentTimeMillis(), 0L, Set.of());
+                return spot != null && Math.sqrt(spot.distSqr(feet)) < AT_HUNT_SPOT;
+            }
+            if (o.area() != null && ZONE.fresh(System.currentTimeMillis())) return zone.equalsIgnoreCase(o.area());
             if (combat == null) return false;
             BlockPos hunt = HuntPoints.nearest(combat.mobs(), feet, p -> DwarvenStore.AREAS.allows(combat.area(), p));
             return hunt != null && Math.sqrt(hunt.distSqr(feet)) < NEAR_HUNT_POINT;
@@ -611,6 +637,7 @@ public final class DwarvenCommissionMacro {
 
     private static void travel(Minecraft client, long now) {
         if (commissionChanged(client)) return;
+        if (engageOnTheWay(client, now)) return;
         navigator.tick(client);
         BlockPos feet = client.player.blockPosition();
         // being in the right zone is what matters, not the exact point we aimed for
@@ -644,6 +671,14 @@ public final class DwarvenCommissionMacro {
             startWork(client, now);
             return;
         }
+        if (navigator.status() == AreaNavigator.Status.FAILED && navigator.goal() != null
+                && Math.sqrt(feet.distSqr(navigator.goal())) <= WORK_WHERE_STOPPED && (rightZone(objective) || zoneFree(objective))) {
+            DwarvenLog.log(String.format("[NAV] the last few blocks to %s failed (%s), but %.0f blocks from it is close enough to work from",
+                    navigator.goal().toShortString(), navigator.failure(), Math.sqrt(feet.distSqr(navigator.goal()))));
+            STATS.trip(true);
+            startWork(client, now);
+            return;
+        }
         if (navigator.status() == AreaNavigator.Status.FAILED) {
             STATS.trip(false);
             RetryBudget.Verdict v = budget.fail(Failure.NAVIGATION);
@@ -659,6 +694,25 @@ public final class DwarvenCommissionMacro {
                 pause(v.waitMs(), "navigation failed (" + navigator.failure() + "), try " + v.attempt());
             }
         }
+    }
+
+    // a combat trip ends as soon as the mobs it's going for are already in reach; walking on to the planned point
+    // would only walk away from them
+    private static boolean engageOnTheWay(Minecraft client, long now) {
+        if (objective.kind() != Objective.Kind.COMBAT || now - lastEngageScanAt < ENGAGE_SCAN_MS) return false;
+        lastEngageScanAt = now;
+        CombatTarget combat = CombatTarget.of(current.name());
+        if (combat == null || combat.zoneBound() && !rightZone(objective)) return false;
+        int n = DwarvenFighter.engageable(client, combat.mobs(), ENGAGE_RADIUS, ENGAGE_UNSEEN);
+        if (n == 0) return false;
+        BlockPos goal = navigator.goal();
+        DwarvenLog.log("[GOBLIN] " + n + " eligible " + (n == 1 ? "entity" : "entities") + " detected on the way" + (goal == null ? ""
+                : String.format(", %.0f blocks before %s", Math.sqrt(client.player.blockPosition().distSqr(goal)), goal.toShortString()))
+                + "; engaging them instead of walking on");
+        navigator.stop(client);
+        STATS.trip(true);
+        startWork(client, now);
+        return true;
     }
 
     // reaching a destination and finding, once the scoreboard caught up, that it isn't in the area. that destination is
@@ -721,7 +775,8 @@ public final class DwarvenCommissionMacro {
             return;
         }
         boolean auto = isGoblinSlayer(current.name());
-        fighter.start(client, combat.mobs(), combat.area(), auto);
+        // a hunt that counts anywhere learns and revisits spawns anywhere; the zone line is no filter for it
+        fighter.start(client, combat.mobs(), combat.zoneBound() ? combat.area() : null, auto);
         Weapons.Choice w = fighter.chooseWeapon(client, now);
         if (w.kind() == null) {
             // other commissions may still be doable, so this one is rested rather than stopping everything
@@ -781,7 +836,8 @@ public final class DwarvenCommissionMacro {
         if (current.progress() > lastProgress + 1e-6) {
             STATS.progress(current.progress() - lastProgress);
             fighter.progressed(now);
-            DwarvenLog.log(String.format("combat: commission progress confirmed: %.0f%% -> %.0f%%", lastProgress * 100, current.progress() * 100));
+            DwarvenLog.log(String.format("%s commission progress increased: %.0f%% -> %.0f%%", isGoblinSlayer(current.name()) ? "[GOBLIN]" : "combat:",
+                    lastProgress * 100, current.progress() * 100));
             lastProgress = current.progress();
             lastProgressAt = now;
             hitsAtLastProgress = fighter.hits();
@@ -1010,6 +1066,15 @@ public final class DwarvenCommissionMacro {
     private static void claim(Minecraft client, long now) {
         if (claimTravel) {
             navigator.tick(client);
+            var nearNpc = navigator.status() == AreaNavigator.Status.FAILED
+                    ? dev.aether.modules.dwarven.claim.Emissaries.npcNear(client, claimEmissary, 6.0) : null;
+            if (nearNpc != null && client.player.distanceTo(nearNpc) <= 4.5) {
+                // the walk gave up beside the emissary, usually pushed off by the npc itself; it can be clicked from here
+                DwarvenLog.log(String.format("claim: walk stopped %.1f blocks from the emissary; claiming from here", client.player.distanceTo(nearNpc)));
+                claimTravel = false;
+                claims.startEmissary(client, nearNpc);
+                return;
+            }
             if (navigator.status() == AreaNavigator.Status.FAILED) {
                 claimTravel = false;
                 RetryBudget.Verdict v = budget.fail(Failure.CLAIM);
@@ -1216,12 +1281,36 @@ public final class DwarvenCommissionMacro {
 
     // logs the three biggest time sinks, and the full numbers into the diagnostic file when it's on
     private static void reportSession(String header) {
-        String report = NavReport.text(extraWaste(), header) + sessionLine();
+        List<String> learning = learningLines();
+        String report = NavReport.text(extraWaste(), header) + sessionLine() + String.join("\n", learning) + "\n";
         Diag.event(Diag.PERF, report.replace("\n", " | "));
         var waste = NavReport.waste(extraWaste());
         for (int i = 0; i < Math.min(3, waste.size()); i++) {
             DwarvenLog.log(String.format("[PERF] wasted time #%d: %s, %.1fs", i + 1, waste.get(i).what(), waste.get(i).ms() / 1000.0));
         }
+        for (String line : learning) DwarvenLog.log(line);
+    }
+
+    // what navigation and hunting have learned so far, kept across sessions
+    private static List<String> learningLines() {
+        List<String> out = new ArrayList<>();
+        var routes = DwarvenStore.ROUTES;
+        out.add(String.format("[LEARNING] %d learned journeys, %d verified by an arrival; %d teleports unreliable or left out; %+.0fs against the historical average so far",
+                routes.count(), routes.verifiedCount(), DwarvenStore.TRAILS.unreliableHopCount(), -routes.savedSeconds()));
+        var ether = routes.method("etherwarp_leg");
+        out.add(String.format("[LEARNING] etherwarp-pathfinder legs: %d worked, %d failed; used only while their expected time beats walking",
+                ether.successes, ether.failures));
+        List<String> dest = routes.byDestination(6);
+        if (!dest.isEmpty()) out.add("[LEARNING] average trip by destination: " + String.join("; ", dest));
+        CombatTarget goblins = CombatTarget.of("Goblin Slayer");
+        BlockPos from = Minecraft.getInstance().player == null ? BlockPos.ZERO : Minecraft.getInstance().player.blockPosition();
+        var spots = DwarvenStore.SPAWNS.productive(from, goblins.mobs(), System.currentTimeMillis(), 3);
+        if (!spots.isEmpty()) {
+            List<String> names = new ArrayList<>();
+            for (var sp : spots) names.add(sp.pos.toShortString() + " (" + sp.kills + " kills)");
+            out.add("[LEARNING] most productive goblin locations: " + String.join("; ", names));
+        }
+        return out;
     }
 
     private static String sessionLine() {

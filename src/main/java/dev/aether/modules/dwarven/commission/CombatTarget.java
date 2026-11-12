@@ -3,13 +3,20 @@ package dev.aether.modules.dwarven.commission;
 import java.util.Locale;
 import java.util.Set;
 
-// the mobs a combat commission counts, by the names their tags show, and the zone they live in when there is one
-public record CombatTarget(Set<String> mobs, String area) {
+// the mobs a combat commission counts, by the names their tags show, and the zone they live in when there is one.
+// zoneBound is whether kills only count inside that zone; when not, the zone is only where to start looking
+public record CombatTarget(Set<String> mobs, String area, boolean zoneBound) {
+    public CombatTarget(Set<String> mobs, String area) {
+        this(mobs, area, true);
+    }
+
     public static CombatTarget of(String commissionName) {
         String lower = commissionName.strip().toLowerCase(Locale.ROOT);
         return switch (lower) {
             // golden and diamond goblins are rare burrows goblins; any type whose kills never count is dropped while hunting
-            case "goblin slayer" -> new CombatTarget(Set.of("Goblin", "Knifethrower", "Fireslinger", "Golden Goblin", "Diamond Goblin"), "Goblin Burrows");
+            // the scoreboard calls much of the burrows plain "Dwarven Mines", so the zone line can't decide where goblins
+            // are; real goblins in view and kills that move the commission do
+            case "goblin slayer" -> new CombatTarget(Set.of("Goblin", "Knifethrower", "Fireslinger", "Golden Goblin", "Diamond Goblin"), "Goblin Burrows", false);
             case "glacite walker slayer" -> new CombatTarget(Set.of("Glacite Walker"), "Great Ice Wall");
             case "treasure hoarder puncher" -> new CombatTarget(Set.of("Treasure Hoarder"), null);
             case "star sentry puncher" -> new CombatTarget(Set.of("Star Sentry"), null);
