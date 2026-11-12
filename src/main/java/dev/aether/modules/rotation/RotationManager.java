@@ -4,6 +4,8 @@ import dev.aether.config.ConfigHelpers;
 import dev.aether.config.AetherConfig;
 
 import dev.aether.modules.failsafe.FailsafeManager;
+import dev.aether.modules.dwarven.camera.CameraMotion;
+import dev.aether.modules.dwarven.camera.CameraProfile;
 import dev.aether.util.RotationUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.Mth;
@@ -33,6 +35,9 @@ public class RotationManager {
     private static long lastUpdateAt = 0L;
     private static boolean trackingMode = false;
     private static float trackingSmoothingMs = 0.0f;
+    private static boolean steerMode = false;
+    private static final CameraMotion steerMotion = new CameraMotion();
+    private static long manualOverrideAt = 0L;
 
     public static boolean isRotating() {
         return isRotating;
@@ -49,6 +54,43 @@ public class RotationManager {
         hasLastApplied = false;
         maxDegreesPerSecond = 0.0f;
         trackingMode = false;
+        steerMode = false;
+    }
+
+    // velocity-based aiming: call again with a new point at any time and the camera bends toward it without stopping
+    public static void steer(Minecraft mc, Vec3 targetPos, CameraProfile profile) {
+        if (mc.player == null) return;
+        RotationUtils.Rotation look = RotationUtils.calculateLookAt(mc.player.getEyePosition(), targetPos);
+        steerAngles(mc, look.yaw, look.pitch, profile);
+    }
+
+    public static void steerAngles(Minecraft mc, float yaw, float pitch, CameraProfile profile) {
+        if (mc.player == null) return;
+        if (FailsafeManager.shouldSuppressPestCleanerRotation(mc)) return;
+        if (!steerMode || !isRotating) {
+            // a steer that just finished hands its state on; anything else starts from rest
+            boolean fresh = !steerMode || Math.abs(Mth.wrapDegrees(steerMotion.yaw() - mc.player.getYRot())) > 1.0f;
+            if (fresh) steerMotion.reset(mc.player.getYRot(), mc.player.getXRot());
+            hasLastApplied = false;
+        }
+        steerMotion.aim(mc.player.getYRot(), mc.player.getXRot(), yaw, pitch, profile);
+        startRot = new RotationUtils.Rotation(mc.player.getYRot(), mc.player.getXRot());
+        targetRot = new RotationUtils.Rotation(yaw, pitch);
+        rotationGcd = computeGcd(mc);
+        applyTrackingNoise = false;
+        trackingMode = false;
+        maxDegreesPerSecond = 0.0f;
+        steerMode = true;
+        isRotating = !steerMotion.arrived();
+    }
+
+    public static float steerRemainingDegrees() {
+        return steerMode && isRotating ? steerMotion.remaining() : 0.0f;
+    }
+
+    // when the player last took the camera back from a steer by moving the mouse
+    public static long lastManualOverrideAt() {
+        return manualOverrideAt;
     }
 
     public static void initiateRotation(Minecraft mc, Vec3 targetPos, long minDuration) {
@@ -171,12 +213,17 @@ public class RotationManager {
 
         if (isRotating && startRot != null && targetRot != null) {
             if (hasExternalRotation(mc)) {
+                if (steerMode) manualOverrideAt = updateAt;
                 FailsafeManager.reportExternalRotation();
                 cancelRotation();
                 return;
             }
 
             long stepMs = Math.min(sinceLastUpdate, MAX_TURN_STEP_MS);
+            if (steerMode) {
+                updateSteer(mc, stepMs);
+                return;
+            }
             float currentYaw;
             float currentPitch;
 
@@ -262,6 +309,26 @@ public class RotationManager {
             hasLastApplied = true;
             FailsafeManager.expectRotation(currentYaw, currentPitch);
         }
+    }
+
+    private static void updateSteer(Minecraft mc, long stepMs) {
+        steerMotion.step(stepMs / 1000.0f);
+        float yaw = steerMotion.yaw();
+        float pitch = steerMotion.pitch();
+        if (!steerMotion.arrived()) {
+            // the motion keeps its exact angle; only what reaches the player is snapped to mouse steps
+            yaw = applyGcd(yaw, mc.player.getYRot());
+            pitch = applyGcd(pitch, mc.player.getXRot(), -90.0f, 90.0f);
+        }
+        mc.player.setYRot(yaw);
+        mc.player.setXRot(pitch);
+        mc.player.yRotO = yaw;
+        mc.player.xRotO = pitch;
+        lastAppliedYaw = yaw;
+        lastAppliedPitch = pitch;
+        hasLastApplied = true;
+        FailsafeManager.expectRotation(yaw, pitch);
+        if (steerMotion.arrived()) isRotating = false;
     }
 
     private static boolean hasExternalRotation(Minecraft mc) {
