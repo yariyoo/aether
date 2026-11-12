@@ -49,10 +49,10 @@ To contribute to language packs, see the [`translations/`](translations/) direct
 
 | Locale | Covered | Percentage |
 | --- | ---: | ---: |
-| `jp_jp` | 303/946 | 32.0% |
-| `pr_us` | 253/946 | 26.7% |
-| `pt_pt` | 477/946 | 50.4% |
-| `ru_ru` | 492/946 | 52.0% |
-| `test` | 516/946 | 54.5% |
-| `zh_cn` | 508/946 | 53.7% |
+| `jp_jp` | 303/979 | 30.9% |
+| `pr_us` | 253/979 | 25.8% |
+| `pt_pt` | 477/979 | 48.7% |
+| `ru_ru` | 492/979 | 50.3% |
+| `test` | 516/979 | 52.7% |
+| `zh_cn` | 508/979 | 51.9% |
 <!-- translation-coverage:end -->
