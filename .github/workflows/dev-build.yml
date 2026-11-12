@@ -11,7 +11,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -20,18 +20,26 @@ jobs:
           distribution: "temurin"
       - uses: gradle/actions/setup-gradle@v4
       - name: Build
-        run: ./gradlew build --no-daemon 2>&1 | tee build.log
-      - name: Upload jar
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: aether-dev-jar
-          path: build/libs/*.jar
-      - name: Upload build log and test results
+        id: build
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew build --no-daemon 2>&1 | tee build.log
+      # artifacts can't be fetched from every network, so the result also goes to a throwaway branch
+      - name: Publish result to ci-builds
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-output
-          path: |
-            build.log
-            build/test-results/test/*.xml
+        shell: bash
+        run: |
+          mkdir out
+          cp build.log out/ || true
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            cp "$(ls build/libs/*.jar | grep -v -- '-sources' | head -1)" out/aether-dev.jar
+          fi
+          echo "${{ github.sha }} ${{ github.ref_name }} ${{ steps.build.outcome }}" > out/BUILD
+          cd out
+          git init -q -b ci-builds
+          git config user.name "aether-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git add -A
+          git commit -q -m "build of ${{ github.sha }}: ${{ steps.build.outcome }}"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" ci-builds
