@@ -3,6 +3,7 @@ package dev.aether.modules.dwarven;
 import dev.aether.config.AetherConfig;
 import dev.aether.macro.MacroState;
 import dev.aether.macro.MacroStateManager;
+import dev.aether.macro.MacroWorkerThread;
 import dev.aether.modules.dwarven.RetryBudget.Failure;
 import dev.aether.modules.dwarven.claim.ClaimManager;
 import dev.aether.modules.dwarven.commission.CombatTarget;
@@ -10,9 +11,15 @@ import dev.aether.modules.dwarven.commission.CommissionReader;
 import dev.aether.modules.dwarven.commission.CommissionScheduler;
 import dev.aether.modules.dwarven.commission.DwarvenCommission;
 import dev.aether.modules.dwarven.commission.Objective;
+import dev.aether.modules.dwarven.diag.Diag;
+import dev.aether.modules.dwarven.diag.DiagLog;
+import dev.aether.modules.dwarven.diag.NavReport;
+import dev.aether.modules.dwarven.diag.Ops;
+import dev.aether.modules.dwarven.diag.Sampler;
 import dev.aether.modules.dwarven.event.GoblinRaid;
 import dev.aether.modules.dwarven.fight.DwarvenFighter;
 import dev.aether.modules.dwarven.fight.Weapons;
+import dev.aether.modules.dwarven.memory.AreaMemory;
 import dev.aether.modules.dwarven.memory.DwarvenStore;
 import dev.aether.modules.dwarven.memory.HuntPoints;
 import dev.aether.modules.dwarven.memory.SpotMemory;
@@ -28,11 +35,14 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.core.BlockPos;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -109,6 +119,11 @@ public final class DwarvenCommissionMacro {
     private static int minedBeforeThisRun;
     private static int titaniumBeforeThisRun;
     private static String zone = "";
+    static final ZoneReading ZONE = new ZoneReading();
+    private static long confirmingSince;
+    // trips per destination for the current commission, to count the time spent travelling somewhere twice
+    private static final Map<Long, Integer> tripsTo = new HashMap<>();
+    private static long repeatedTripMs;
 
     private DwarvenCommissionMacro() {}
 
@@ -146,6 +161,8 @@ public final class DwarvenCommissionMacro {
         stage = Stage.OFF;
         DwarvenStore.save();
         DwarvenLog.log("stopped: " + reason);
+        Ops.cancelAll("macro stopped");
+        reportSession("session report (" + reason + ")");
         if (stopMacroState && MacroStateManager.getCurrentState() == MacroState.State.DWARVEN_COMMISSIONS) {
             MacroStateManager.stopMacro(client, "Dwarven commissions stopped: " + reason, false);
         }
@@ -183,6 +200,7 @@ public final class DwarvenCommissionMacro {
 
     public static void onChat(String message) {
         miner.onChat(message);
+        dev.aether.modules.dwarven.fight.Mana.onChat(message);
         claims.onChat(message);
         if (stage == Stage.OFF) return;
         String done = CommissionReader.completedInChat(message);
@@ -193,11 +211,28 @@ public final class DwarvenCommissionMacro {
     }
 
     public static void tick(Minecraft client) {
+        long t0 = System.nanoTime();
+        tickInner(client);
+        lastTickNs = System.nanoTime() - t0;
+        diagnostics(client);
+    }
+
+    // per-frame hook from the hud, so a snapshot can still go out on time when a client tick runs late
+    public static void onFrame(Minecraft client) {
+        if (stage != Stage.OFF && client.player != null) sample(client);
+    }
+
+    private static void tickInner(Minecraft client) {
         if (client.player == null || client.level == null) return;
         long now = System.currentTimeMillis();
         pollKeybind(client);
         boolean inMines = ClientUtils.getCurrentLocation() == MacroState.Location.DWARVEN_MINES;
-        if (inMines) learn(client, now);
+        if (inMines) {
+            // every tick, so a teleport is told apart from walking and the zone line isn't trusted until it catches up
+            ZONE.tick(client.player.getX(), client.player.getY(), client.player.getZ(), readZone(), now);
+            zone = ZONE.zone();
+            learn(client, now);
+        }
         autoStart(client, inMines, now);
         if (pendingStart && client.gui.screen() == null) {
             pendingStart = false;
@@ -254,9 +289,9 @@ public final class DwarvenCommissionMacro {
         if (now - lastLearnAt < LEARN_EVERY_MS) return;
         lastLearnAt = now;
         DwarvenStore.load();
-        zone = readZone();
         BlockPos feet = client.player.blockPosition();
-        if (!zone.isEmpty() && client.player.onGround()) DwarvenStore.AREAS.observe(zone, feet);
+        // a stale zone line right after a teleport would teach the old zone's name for the new place
+        if (ZONE.fresh(now) && client.player.onGround()) DwarvenStore.AREAS.observe(zone, feet);
         DwarvenStore.EMISSARIES.observe(client);
         if (AetherConfig.DWARVEN_LEARN_TRAILS.get()) DwarvenStore.TRAILS.walked(feet, client.player.onGround());
         if (now - lastSaveAt > SAVE_EVERY_MS) {
@@ -301,6 +336,9 @@ public final class DwarvenCommissionMacro {
         objective = null;
         completed = 0;
         STATS.reset();
+        Ops.reset();
+        repeatedTripMs = 0;
+        tripsTo.clear();
         rewards = dev.aether.modules.dwarven.claim.Rewards.NONE;
         minedBeforeThisRun = miner.mined();
         titaniumBeforeThisRun = miner.titaniumMined();
@@ -316,7 +354,11 @@ public final class DwarvenCommissionMacro {
 
     private static void enter(Stage next, String why) {
         long now = System.currentTimeMillis();
-        if (stage != Stage.OFF && stageSince > 0) STATS.stageTime(stage, now - stageSince);
+        long spent = stageSince > 0 ? now - stageSince : 0;
+        if (stage != Stage.OFF && stageSince > 0) STATS.stageTime(stage, spent);
+        if (stage == Stage.WAIT) Ops.record("recovery.wait", spent);
+        if (stage != Stage.OFF) Ops.record("stage." + stage.name().toLowerCase(Locale.ROOT), spent);
+        Diag.event(Diag.STATE, stage + " -> " + next + " (" + why + ") after " + spent + "ms in " + stage, spent);
         if (stage != next) DwarvenLog.log(stage + " -> " + next + " (" + why + ")");
         stage = next;
         stageSince = now;
@@ -433,6 +475,7 @@ public final class DwarvenCommissionMacro {
         objective = choice.objective();
         if (changed) {
             commissionSince = now;
+            tripsTo.clear();
             triedSpots.clear();
             DwarvenLog.log(String.format("chose %s (%.0f%%), about %.0fs%s; all: %s", current.name(), current.progress() * 100, choice.seconds(),
                     choice.alsoAdvanced().isEmpty() ? "" : ", also advances " + choice.alsoAdvanced().stream().map(DwarvenCommission::name).toList(),
@@ -471,9 +514,14 @@ public final class DwarvenCommissionMacro {
         return out.toString();
     }
 
+    // only a zone line that has caught up with the last teleport counts as evidence of being in the wrong place
     private static boolean wrongZone(Objective o) {
         boolean placed = o.kind() == Objective.Kind.MINING || o.kind() == Objective.Kind.COMBAT;
-        return placed && o.area() != null && !zone.isEmpty() && !zone.equalsIgnoreCase(o.area());
+        return placed && o.area() != null && ZONE.fresh(System.currentTimeMillis()) && !zone.equalsIgnoreCase(o.area());
+    }
+
+    private static boolean rightZone(Objective o) {
+        return o.area() != null && ZONE.fresh(System.currentTimeMillis()) && zone.equalsIgnoreCase(o.area());
     }
 
     private static boolean isGoblinSlayer(String name) {
@@ -498,36 +546,38 @@ public final class DwarvenCommissionMacro {
     private static BlockPos destination(Objective o, BlockPos feet, long now) {
         if (o.kind() == Objective.Kind.COMBAT) {
             CombatTarget combat = current == null ? null : CombatTarget.of(current.name());
-            if (combat == null) return o.area() == null ? null : DwarvenStore.AREAS.nearestPoint(o.area(), feet);
+            if (combat == null) return o.area() == null ? null : DwarvenStore.AREAS.bestPoint(o.area(), feet, List.of(), 0);
             // a recorded fight spot only counts if it lies in the commission's area; a raid elsewhere leaves misleading ones
             java.util.function.Predicate<BlockPos> inIt = p -> DwarvenStore.AREAS.allows(combat.area(), p);
             BlockPos busiest = DwarvenStore.SPAWNS.best(combat.mobs(), feet, now, 0L, Set.of(), inIt);
             if (busiest != null) return busiest;
             BlockPos hunt = HuntPoints.nearest(combat.mobs(), feet, inIt);
             if (hunt != null) return hunt;
-            return o.area() == null ? null : DwarvenStore.AREAS.nearestPoint(o.area(), feet);
+            return o.area() == null ? null : DwarvenStore.AREAS.bestPoint(o.area(), feet, List.of(), 0);
         }
         if (AetherConfig.DWARVEN_VEIN_MEMORY.get()) {
             SpotMemory.Spot spot = DwarvenStore.SPOTS.best(o.area(), now, AetherConfig.DWARVEN_RECHECK_SECONDS.get() * 1000L,
-                    PRIOR_RATE, triedSpots, p -> AreaNavigator.walkSeconds(feet, p));
+                    PRIOR_RATE, triedSpots, p -> AreaNavigator.walkSeconds(feet, p), p -> DwarvenStore.AREAS.allows(o.area(), p));
             boolean inRange = spot != null && Math.sqrt(spot.pos.distSqr(feet)) <= AetherConfig.DWARVEN_MAX_EXPLORE.get();
             if (spot != null && spot.blocks > 0 && (inRange || o.area() != null)) return spot.pos;
         }
         if (o.area() == null) return null;
-        // a goal that keeps failing from here is swapped for another part of the same area
-        return DwarvenStore.AREAS.nearestPoint(o.area(), feet, NavFailures.failedGoalsFrom(feet, now), 16);
+        // a goal that keeps failing from here is swapped for another part of the same area; border points come last
+        return DwarvenStore.AREAS.bestPoint(o.area(), feet, NavFailures.failedGoalsFrom(feet, now), 16);
     }
 
     private static boolean inArea(Objective o, BlockPos feet) {
         if (o.kind() == Objective.Kind.COMBAT) {
-            if (o.area() != null && !zone.isEmpty()) return zone.equalsIgnoreCase(o.area());
+            if (o.area() != null && ZONE.fresh(System.currentTimeMillis())) return zone.equalsIgnoreCase(o.area());
             CombatTarget combat = CombatTarget.of(current.name());
             if (combat == null) return false;
             BlockPos hunt = HuntPoints.nearest(combat.mobs(), feet, p -> DwarvenStore.AREAS.allows(combat.area(), p));
             return hunt != null && Math.sqrt(hunt.distSqr(feet)) < NEAR_HUNT_POINT;
         }
         if (o.area() == null) return true;
-        return zone.equalsIgnoreCase(o.area()) || (zone.isEmpty() && DwarvenStore.AREAS.contains(o.area(), feet));
+        if (ZONE.fresh(System.currentTimeMillis())) return zone.equalsIgnoreCase(o.area());
+        // right after a teleport the zone line may still name where we came from; go by what's known about this spot
+        return DwarvenStore.AREAS.confidence(o.area(), feet) == AreaMemory.Confidence.VERIFIED_CORRECT_AREA;
     }
 
     private static void goWork(Minecraft client, long now) {
@@ -550,6 +600,8 @@ public final class DwarvenCommissionMacro {
             startWork(client, now);
             return;
         }
+        int before = tripsTo.merge(target.asLong(), 1, Integer::sum) - 1;
+        if (before > 0) Diag.event(Diag.ROUTE, "trip " + (before + 1) + " to " + target.toShortString() + " for this commission");
         navigator.start(client, target, objective.area() == null ? "a remembered spot" : objective.area(), ARRIVE_WITHIN);
         enter(Stage.TRAVEL, "heading to " + (objective.area() == null ? "ore" : objective.area()));
     }
@@ -559,33 +611,29 @@ public final class DwarvenCommissionMacro {
         navigator.tick(client);
         BlockPos feet = client.player.blockPosition();
         // being in the right zone is what matters, not the exact point we aimed for
-        boolean there = navigator.status() == AreaNavigator.Status.ARRIVED
-                || (objective.area() != null && zone.equalsIgnoreCase(objective.area()) && Math.sqrt(feet.distSqr(navigator.goal())) < 12);
-        if (there && wrongZone(objective)) {
-            // arriving at a remembered point isn't arriving in the area; the scoreboard has the final word
-            navigator.stop(client);
-            DwarvenLog.log("vein: reached " + feet.toShortString() + " for " + objective.area() + " but the scoreboard says " + zone
-                    + "; forgetting that point and picking another");
-            DwarvenStore.AREAS.reject(objective.area(), feet);
-            NavFailures.record(navigator.goal(), feet, "wrong area", now);
-            if (objective.kind() == Objective.Kind.COMBAT) {
-                // the fight spot that brought us here is not in the hunt's area; forget it so it isn't picked again
-                CombatTarget combat = CombatTarget.of(current.name());
-                HuntPoints.forget(navigator.goal(), 8);
-                if (combat != null) DwarvenStore.SPAWNS.forget(navigator.goal(), combat.mobs(), 8);
-            }
-            RetryBudget.Verdict v = budget.fail(Failure.WRONG_AREA);
-            if (!v.retry()) {
-                budget.succeeded(Failure.WRONG_AREA);
-                skipped.put(current.name(), now + restMs());
-                current = null;
-                enter(Stage.OBSERVE, "couldn't find the real " + objective.area());
-            } else {
-                goWork(client, now);
+        boolean arrived = navigator.status() == AreaNavigator.Status.ARRIVED;
+        boolean there = arrived || (rightZone(objective) && Math.sqrt(feet.distSqr(navigator.goal())) < 12);
+        boolean placed = objective.kind() == Objective.Kind.MINING || objective.kind() == Objective.Kind.COMBAT;
+        if (arrived && placed && objective.area() != null && !ZONE.fresh(now)) {
+            // the last hop usually lands moments before the sidebar is refreshed; judge the zone once it has caught up
+            if (confirmingSince == 0) {
+                confirmingSince = now;
+                Diag.event("AREA", "arrived at " + feet.toShortString() + ", waiting for the zone line to refresh (shows " + zone + ")");
             }
             return;
         }
+        if (confirmingSince != 0) {
+            long took = now - confirmingSince;
+            confirmingSince = 0;
+            Ops.record("area.confirm", took);
+            Diag.event("AREA", "zone line refreshed after " + took + "ms: " + zone, took);
+        }
+        if (there && wrongZone(objective)) {
+            wrongArea(client, feet, now);
+            return;
+        }
         if (there) {
+            if (tripsTo.getOrDefault(navigator.goal().asLong(), 0) > 1) repeatedTripMs += navigator.lastTripMs();
             navigator.stop(client);
             STATS.trip(true);
             budget.succeeded(Failure.NAVIGATION);
@@ -608,6 +656,42 @@ public final class DwarvenCommissionMacro {
                 pause(v.waitMs(), "navigation failed (" + navigator.failure() + "), try " + v.attempt());
             }
         }
+    }
+
+    // reaching a destination and finding, once the scoreboard caught up, that it isn't in the area. that destination is
+    // ruled out for this area for good (until standing there shows the right zone), and the next pick starts from here
+    private static void wrongArea(Minecraft client, BlockPos feet, long now) {
+        BlockPos goal = navigator.goal();
+        navigator.stop(client);
+        STATS.wrongArea();
+        Ops.record("nav.trip.wrong_area", navigator.lastTripMs());
+        DwarvenLog.log("[AREA] reached " + feet.toShortString() + " for " + objective.area() + " but the scoreboard says " + zone
+                + " (" + ZONE.sinceJump(now) + "ms after the last teleport); destination " + goal.toShortString() + " ruled out for " + objective.area());
+        DwarvenStore.AREAS.markWrongGoal(objective.area(), goal);
+        DwarvenStore.AREAS.markWrongGoal(objective.area(), feet);
+        triedSpots.add(goal);
+        if (objective.kind() == Objective.Kind.COMBAT) {
+            // the fight spot that brought us here is not in the hunt's area; forget it so it isn't picked again
+            CombatTarget combat = CombatTarget.of(current.name());
+            HuntPoints.forget(goal, 8);
+            if (combat != null) DwarvenStore.SPAWNS.forget(goal, combat.mobs(), 8);
+        }
+        RetryBudget.Verdict v = budget.fail(Failure.WRONG_AREA);
+        if (!v.retry()) {
+            budget.succeeded(Failure.WRONG_AREA);
+            skipped.put(current.name(), now + restMs());
+            lastFailure.put(current.name(), "every known destination in " + objective.area() + " turned out to be elsewhere");
+            current = null;
+            enter(Stage.OBSERVE, "couldn't find the real " + objective.area());
+            return;
+        }
+        BlockPos next = destination(objective, feet, now);
+        if (next != null) {
+            DwarvenLog.log(String.format("[AREA] next %s destination %s, %.0f blocks from here (%s)", objective.area(), next.toShortString(),
+                    Math.sqrt(next.distSqr(feet)), DwarvenStore.AREAS.confidence(objective.area(), next).name().toLowerCase(Locale.ROOT)));
+        }
+        // no navigation failure is recorded: the route worked, the destination was wrong, so nothing pushes a forge reset
+        goWork(client, now);
     }
 
     private static void stopWork(Minecraft client) {
@@ -679,7 +763,7 @@ public final class DwarvenCommissionMacro {
         } else {
             wrongZoneSince = 0;
         }
-        fighter.zone(zone);
+        fighter.zone(ZONE.fresh(now) ? zone : "");
         fighter.tick(client);
         if (fighter.outcome() == DwarvenFighter.Outcome.NO_WEAPON) {
             String why = fighter.weapon() == null ? "no usable combat equipment" : fighter.weapon().reason();
@@ -811,7 +895,8 @@ public final class DwarvenCommissionMacro {
                 // mining here wouldn't count for this commission; drop these cells from the area and go back in
                 DwarvenLog.log("vein: mining position " + client.player.blockPosition().toShortString() + " is in " + zone + ", not "
                         + objective.area() + "; repositioning");
-                DwarvenStore.AREAS.reject(objective.area(), client.player.blockPosition());
+                // the stand itself is ruled out for this area; the cells around it keep what the scoreboard really said
+                DwarvenStore.AREAS.markWrongGoal(objective.area(), client.player.blockPosition());
                 stopWork(client);
                 goWork(client, now);
                 return;
@@ -819,7 +904,7 @@ public final class DwarvenCommissionMacro {
         } else {
             wrongZoneSince = 0;
         }
-        miner.zone(zone);
+        miner.zone(ZONE.fresh(now) ? zone : "");
         miner.tick(client);
         if (current.progress() > lastProgress + 1e-6) {
             lastProgress = current.progress();
@@ -990,6 +1075,162 @@ public final class DwarvenCommissionMacro {
 
     public static long sessionMs() {
         return stage == Stage.OFF ? 0 : System.currentTimeMillis() - sessionStartedAt;
+    }
+
+    private static final Sampler SAMPLER = new Sampler(50);
+    private static long lastTickNs;
+    private static double lastSnapX, lastSnapY, lastSnapZ;
+    private static long lastSnapNs;
+    private static float lastSnapYaw, lastSnapPitch;
+    private static final Path DIAG_DIR = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("aether").resolve("dwarven").resolve("diag");
+
+    private static void diagnostics(Minecraft client) {
+        boolean on = AetherConfig.DWARVEN_DIAG.get();
+        if (!on && Diag.log() != null) Diag.close();
+        Set<String> off = new HashSet<>();
+        if (!AetherConfig.DWARVEN_DIAG_TRANSITIONS.get()) off.add(Diag.STATE);
+        if (!AetherConfig.DWARVEN_DIAG_PATHING.get()) off.add(Diag.PATH);
+        if (!AetherConfig.DWARVEN_DIAG_ROUTE.get()) {
+            off.add(Diag.ROUTE);
+            off.add(Diag.HOP);
+        }
+        if (!AetherConfig.DWARVEN_DIAG_ROTATION.get()) off.add(Diag.ROT);
+        if (!AetherConfig.DWARVEN_DIAG_MINING.get()) off.add(Diag.MINE);
+        if (!AetherConfig.DWARVEN_DIAG_RECOVERY.get()) off.add(Diag.RECOVERY);
+        Diag.configure(on, off, DwarvenCommissionMacro::newDiagLog);
+        SAMPLER.interval(AetherConfig.DWARVEN_DIAG_INTERVAL_MS.get());
+        if (stage != Stage.OFF && client.player != null) sample(client);
+        if (stage != Stage.OFF && AetherConfig.DWARVEN_WATCHDOG.get()) {
+            for (String w : Ops.watchdog(AetherConfig.DWARVEN_WATCHDOG_SLACK.get())) {
+                if (w.contains("WARNING")) DwarvenLog.log(w);
+                else Diag.event(Diag.PERF, w);
+            }
+        }
+        Diag.flush(System.currentTimeMillis());
+    }
+
+    private static DiagLog newDiagLog() {
+        String name = "dwarven-" + java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        int buffer = AetherConfig.DWARVEN_DIAG_BUFFER.get();
+        long maxBytes = AetherConfig.DWARVEN_DIAG_MAX_FILE_MB.get() * 1024L * 1024L;
+        SAMPLER.reset();
+        return new DiagLog(DIAG_DIR, name, buffer, buffer, maxBytes, AetherConfig.DWARVEN_DIAG_ROTATIONS.get(),
+                r -> MacroWorkerThread.getInstance().submitCritical("dwarven diagnostics", r), System.nanoTime());
+    }
+
+    // gathers what can be read on the game thread into one immutable line; the writer never touches the world
+    private static void sample(Minecraft client) {
+        if (!Diag.enabled()) return;
+        long ns = System.nanoTime();
+        Sampler.Sample smp = SAMPLER.due(ns);
+        if (smp == null) return;
+        long now = System.currentTimeMillis();
+        StringBuilder b = new StringBuilder(640);
+        b.append(String.format("dt=%.1fms", smp.intervalNs() / 1e6));
+        if (smp.lateNs() > 0) b.append(String.format(" late=%.1fms missed=%d", smp.lateNs() / 1e6, smp.missed()));
+        b.append(" state=").append(stage).append(" inStateMs=").append(now - stageSince);
+        if (current != null) b.append(" commission=\"").append(current.name()).append(String.format("\" %.0f%%", current.progress() * 100));
+        if (objective != null) b.append(" objective=").append(objective.kind()).append(objective.area() == null ? "" : "/" + objective.area());
+        b.append(" zone=\"").append(zone).append('"').append(ZONE.fresh(now) ? "" : "(stale " + ZONE.sinceJump(now) + "ms)");
+        b.append(" paused=").append(client.gui.screen() != null);
+        b.append(" subsystem=").append(switch (stage) {
+            case TRAVEL -> "navigator";
+            case MINE -> "miner";
+            case FIGHT -> "fighter";
+            case CLAIM -> "claims";
+            default -> "macro";
+        });
+        double x = client.player.getX(), y = client.player.getY(), z = client.player.getZ();
+        if (AetherConfig.DWARVEN_DIAG_COORDS.get()) {
+            b.append(String.format(" pos=%.2f,%.2f,%.2f", x, y, z));
+            if (lastSnapNs > 0) {
+                double secs = (ns - lastSnapNs) / 1e9;
+                double moved = Math.sqrt(Math.pow(x - lastSnapX, 2) + Math.pow(z - lastSnapZ, 2));
+                b.append(String.format(" speed=%.2f expected=%.2f", secs > 0 ? moved / secs : 0, client.player.isSprinting() ? 5.61 : 4.32));
+            }
+        }
+        if (AetherConfig.DWARVEN_DIAG_ROTATION.get()) {
+            float yaw = client.player.getYRot(), pitch = client.player.getXRot();
+            b.append(String.format(" yaw=%.1f pitch=%.1f", yaw, pitch));
+            var target = RotationManager.targetRotation();
+            if (target != null) {
+                float diff = Math.abs(net.minecraft.util.Mth.wrapDegrees(target.yaw - yaw)) + Math.abs(target.pitch - pitch);
+                b.append(String.format(" targetYaw=%.1f targetPitch=%.1f diff=%.1f", target.yaw, target.pitch, diff));
+            }
+            if (lastSnapNs > 0) {
+                double secs = (ns - lastSnapNs) / 1e9;
+                double turned = Math.abs(net.minecraft.util.Mth.wrapDegrees(yaw - lastSnapYaw)) + Math.abs(pitch - lastSnapPitch);
+                b.append(String.format(" rotVel=%.0fdeg/s", secs > 0 ? turned / secs : 0));
+            }
+            b.append(" rotating=").append(RotationManager.isRotating());
+            lastSnapYaw = yaw;
+            lastSnapPitch = pitch;
+        }
+        lastSnapX = x;
+        lastSnapY = y;
+        lastSnapZ = z;
+        lastSnapNs = ns;
+        navigator.describe(b, client, now);
+        if (stage == Stage.MINE) miner.describe(b, client, now);
+        if (stage == Stage.FIGHT) fighter.describe(b, client, now);
+        b.append(String.format(" tickMs=%.2f", lastTickNs / 1e6));
+        b.append(" lastOp=").append(Ops.lastEnded()).append(" pending=").append(Ops.oldestOpen());
+        b.append(String.format(" planMsTotal=%.1f", navigator.planningNanos() / 1e6)).append(" pathfinderCalls=").append(navigator.pathfinderCalls())
+                .append(" plans=").append(navigator.plans()).append(" recoveryMs=").append(STATS.recoveryMs());
+        DiagLog log = Diag.log();
+        if (log != null) b.append(" queued=").append(log.queued()).append(" dropped=").append(log.dropped());
+        Diag.snapshot(b.toString());
+    }
+
+    private static Map<String, Long> extraWaste() {
+        Map<String, Long> extra = new LinkedHashMap<>();
+        extra.put("repeated trips to the same destination", repeatedTripMs);
+        return extra;
+    }
+
+    // logs the three biggest time sinks, and the full numbers into the diagnostic file when it's on
+    private static void reportSession(String header) {
+        String report = NavReport.text(extraWaste(), header) + sessionLine();
+        Diag.event(Diag.PERF, report.replace("\n", " | "));
+        var waste = NavReport.waste(extraWaste());
+        for (int i = 0; i < Math.min(3, waste.size()); i++) {
+            DwarvenLog.log(String.format("[PERF] wasted time #%d: %s, %.1fs", i + 1, waste.get(i).what(), waste.get(i).ms() / 1000.0));
+        }
+    }
+
+    private static String sessionLine() {
+        long ms = sessionMs();
+        double hours = ms / 3_600_000.0;
+        return String.format("session %.1f min, %d commissions (%.1f/h), %d wrong-area arrivals, average commission %.0fs%n", ms / 60000.0,
+                completed, hours > 0 ? completed / hours : 0, STATS.wrongAreas(), STATS.averageCommissionMs() / 1000.0);
+    }
+
+    // writes the ring buffer and the report to a file of its own; works with diagnostics off too, minus the event history
+    public static void exportDiagnostics() {
+        String stamp = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        Path file = DIAG_DIR.resolve("export-" + stamp + ".txt");
+        String report = NavReport.text(extraWaste(), "diagnostic export") + sessionLine();
+        DiagLog log = Diag.log();
+        // the writer finishes off the game thread; the chat message goes back onto it
+        Runnable done = () -> MacroWorkerThread.runOnClient(Minecraft.getInstance(), () -> ClientUtils.sendMessage("§aDwarven diagnostics exported to " + file));
+        if (log != null) {
+            log.export(file, report, done);
+            return;
+        }
+        MacroWorkerThread.getInstance().submit("dwarven diagnostics export", () -> {
+            try {
+                java.nio.file.Files.createDirectories(DIAG_DIR);
+                java.nio.file.Files.writeString(file, report);
+            } catch (java.io.IOException ignored) {
+                // reported as done either way; the file is simply missing
+            }
+            done.run();
+        });
+    }
+
+    public static List<String[]> combatDebugRows(Minecraft client) {
+        if (stage != Stage.FIGHT || client.player == null) return List.of();
+        return fighter.debugRows(client, System.currentTimeMillis());
     }
 
     public static String hudWeapon() {

@@ -4,6 +4,7 @@ import dev.aether.config.AetherConfig;
 import dev.aether.modules.dwarven.DwarvenCommissionMacro;
 import dev.aether.renderer.NVGRenderer;
 import dev.aether.ui.theme.Theme;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 
 public class DwarvenHudElement extends HudElement {
@@ -25,7 +26,8 @@ public class DwarvenHudElement extends HudElement {
     @Override public void    savePosition()   { AetherConfig.save(); }
 
     private static int rows() {
-        return 7 + (AetherConfig.DWARVEN_HUD_STATS.get() ? 3 + statRows() : 0) + (AetherConfig.DWARVEN_HUD_DEBUG.get() ? 3 : 0);
+        return 7 + (AetherConfig.DWARVEN_HUD_STATS.get() ? 3 + statRows() : 0) + (AetherConfig.DWARVEN_HUD_DEBUG.get() ? 3 : 0)
+                + DwarvenCommissionMacro.combatDebugRows(Minecraft.getInstance()).size();
     }
 
     // the panel grows only by the stat rows that have something to show
@@ -85,6 +87,7 @@ public class DwarvenHudElement extends HudElement {
             y = row(nvg, y, "Break time", DwarvenCommissionMacro.usualBreakMs() + "ms", Theme.HUD_VALUE);
             y = row(nvg, y, "Recoveries", String.valueOf(DwarvenCommissionMacro.recoveries()), Theme.HUD_VALUE);
         }
+        for (String[] r : DwarvenCommissionMacro.combatDebugRows(Minecraft.getInstance())) y = row(nvg, y, r[0], r[1], Theme.HUD_VALUE);
         HudStyle.progress(nvg, HudStyle.PAD, y + 3f, W - HudStyle.PAD * 2, 4f, (float) Math.max(0, progress));
     }
 
