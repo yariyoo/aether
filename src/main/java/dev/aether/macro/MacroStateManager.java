@@ -18,6 +18,7 @@ import dev.aether.modules.inventorymanager.AutoSellManager;
 import dev.aether.modules.inventorymanager.BookCombineManager;
 import dev.aether.modules.inventorymanager.GeorgeManager;
 import dev.aether.modules.inventorymanager.JunkManager;
+import dev.aether.modules.dwarven.DwarvenCommissionMacro;
 import dev.aether.modules.metaldetector.MetalDetectorSolver;
 import dev.aether.modules.misc.AutoCarnivalManager;
 import dev.aether.modules.movement.MovementPlaybackManager;
@@ -243,6 +244,7 @@ public class MacroStateManager {
         // Stop any active internal farming macro.
         runOnClientThread(client, () -> FarmingMacroManager.disable(client));
         MetalDetectorSolver.stopForMacro(client);
+        DwarvenCommissionMacro.stop(client, debugReason, false);
         AutoCarnivalManager.stopForMacro(client);
         FailsafeManager.reset();
         SqueakyMousematManager.clearReapplyAttempt();

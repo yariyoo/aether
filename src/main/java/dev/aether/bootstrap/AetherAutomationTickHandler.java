@@ -14,6 +14,7 @@ import dev.aether.modules.inventorymanager.AutoSellManager;
 import dev.aether.modules.inventorymanager.BookCombineManager;
 import dev.aether.modules.inventorymanager.BoosterCookieManager;
 import dev.aether.modules.inventorymanager.GeorgeManager;
+import dev.aether.modules.dwarven.DwarvenCommissionMacro;
 import dev.aether.modules.metaldetector.MetalDetectorSolver;
 import dev.aether.modules.misc.AutoCarnivalManager;
 import dev.aether.modules.inventorymanager.JunkManager;
@@ -163,6 +164,7 @@ public final class AetherAutomationTickHandler {
         PestAotvManager.updatePreparationAotv(client);
         PestDestroyer.update();
         MetalDetectorSolver.update();
+        DwarvenCommissionMacro.tick(client);
         VacuumParticleDebug.onClientTick();
     }
 

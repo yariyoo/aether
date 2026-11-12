@@ -372,7 +372,8 @@ public class ClientUtils {
     }
 
     public static boolean isSupportedHudArea(MacroState.Location location) {
-        return location == MacroState.Location.GARDEN || location == MacroState.Location.CRYSTAL_HOLLOWS;
+        return location == MacroState.Location.GARDEN || location == MacroState.Location.CRYSTAL_HOLLOWS
+                || location == MacroState.Location.DWARVEN_MINES;
     }
 
     public static long getJacobsContestRemainingMs() {

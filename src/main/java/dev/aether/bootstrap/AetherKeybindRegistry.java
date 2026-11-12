@@ -1,5 +1,8 @@
 package dev.aether.bootstrap;
 
+import com.mojang.blaze3d.platform.InputConstants;
+import dev.aether.mixin.AccessorKeyMapping;
+import dev.aether.mixin.AccessorWindow;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -21,6 +24,7 @@ public final class AetherKeybindRegistry {
     private static KeyMapping pipKey;
     private static KeyMapping ungrabMouseKey;
     private static KeyMapping manualPestEarlyFinishKey;
+    private static KeyMapping dwarvenCommissionsKey;
     private static boolean registered;
 
     private AetherKeybindRegistry() {
@@ -52,6 +56,8 @@ public final class AetherKeybindRegistry {
                     .registerKeyMapping(new KeyMapping("key.aether.ungrab_mouse", GLFW.GLFW_KEY_U, category));
             manualPestEarlyFinishKey = KeyMappingHelper
                     .registerKeyMapping(new KeyMapping("Manual Pest Early Finish", GLFW.GLFW_KEY_UNKNOWN, category));
+            dwarvenCommissionsKey = KeyMappingHelper
+                    .registerKeyMapping(new KeyMapping("key.aether.dwarven_commissions", GLFW.GLFW_KEY_UNKNOWN, category));
         } catch (IllegalStateException ex) {
             // External feature jars can initialize after options are already built; reuse existing mappings if present.
             macroToggleKey = resolveExistingOrDetached("key.aether.start_script", GLFW.GLFW_KEY_K, category);
@@ -63,6 +69,7 @@ public final class AetherKeybindRegistry {
             pipKey = resolveExistingOrDetached("key.aether.pip", GLFW.GLFW_KEY_P, category);
             ungrabMouseKey = resolveExistingOrDetached("key.aether.ungrab_mouse", GLFW.GLFW_KEY_U, category);
             manualPestEarlyFinishKey = resolveExistingOrDetached("Manual Pest Early Finish", GLFW.GLFW_KEY_UNKNOWN, category);
+            dwarvenCommissionsKey = resolveExistingOrDetached("key.aether.dwarven_commissions", GLFW.GLFW_KEY_UNKNOWN, category);
         }
         registered = true;
     }
@@ -157,6 +164,22 @@ public final class AetherKeybindRegistry {
         return freelookKey;
     }
 
+    public static KeyMapping getDwarvenCommissionsKey() {
+        register();
+        return dwarvenCommissionsKey;
+    }
+
+    // physical key state, since consumeClick() never fires for a mapping that ended up detached
+    public static boolean isDown(Minecraft client, KeyMapping mapping) {
+        if (mapping == null) return false;
+        InputConstants.Key key = ((AccessorKeyMapping) mapping).getKey();
+        if (key == null || key == InputConstants.UNKNOWN) return false;
+        return switch (key.getType()) {
+            case KEYSYM, SCANCODE -> InputConstants.isKeyDown(client.getWindow(), key.getValue());
+            case MOUSE -> GLFW.glfwGetMouseButton(((AccessorWindow) (Object) client.getWindow()).getHandle(), key.getValue()) == GLFW.GLFW_PRESS;
+        };
+    }
+
     public static KeyMapping getPipKey() {
         register();
         return pipKey;
@@ -183,7 +206,8 @@ public final class AetherKeybindRegistry {
                 new RegisteredKeybind("Freelook (hold)", "Orbit the camera while the player keeps facing forward", getFreelookKey()),
                 new RegisteredKeybind("Toggle PiP", "Opens or closes the picture-in-picture window", getPipKey()),
                 new RegisteredKeybind("Toggle Ungrab Mouse", "Releases or restores the mouse cursor", getUngrabMouseKey()),
-                new RegisteredKeybind("Manual Pest Early Finish", "While manual pest cleaning is waiting, skip straight to pest post-actions and resume farming", getManualPestEarlyFinishKey())
+                new RegisteredKeybind("Manual Pest Early Finish", "While manual pest cleaning is waiting, skip straight to pest post-actions and resume farming", getManualPestEarlyFinishKey()),
+                new RegisteredKeybind("Toggle Dwarven Commissions", "Starts or stops the Dwarven Mines commission macro", getDwarvenCommissionsKey())
         );
     }
 

@@ -8,6 +8,7 @@ import dev.aether.macro.MacroWorkerThread;
 import dev.aether.modules.CropFeverManager;
 import dev.aether.modules.farming.BedrockPlotMaker;
 import dev.aether.modules.gear.helpers.LoadoutManager;
+import dev.aether.modules.dwarven.DwarvenCommissionMacro;
 import dev.aether.modules.metaldetector.MetalDetectorSolver;
 import dev.aether.modules.misc.AutoCarnivalManager;
 import dev.aether.modules.pest.PestManager;
@@ -50,6 +51,7 @@ public final class AetherChatEvents {
             String lowerPlainText = plainText.toLowerCase();
 
             MetalDetectorSolver.onGameMessage(Minecraft.getInstance(), plainText, overlay);
+            if (!overlay) DwarvenCommissionMacro.onChat(plainText);
 
             if (overlay) {
                 PestDestroyer.onLassoOverlayMessage(plainText);

@@ -18,6 +18,7 @@ import dev.aether.modules.failsafe.FailsafeTestManager;
 import dev.aether.modules.farming.BedrockPlotMaker;
 import dev.aether.modules.interaction.EntityInteractManager;
 import dev.aether.modules.irc.IrcManager;
+import dev.aether.modules.dwarven.DwarvenCommissionMacro;
 import dev.aether.modules.metaldetector.MetalDetectorSolver;
 import dev.aether.modules.inventorymanager.AutoSellManager;
 import dev.aether.modules.movement.MovementPlaybackManager;
@@ -282,6 +283,11 @@ public final class AetherCommandRegistrar {
                             .then(ClientCommands.literal("pestexchange")
                                     .executes(ctx -> {
                                         PestExchangeManager.start(Minecraft.getInstance());
+                                        return 1;
+                                    }))
+                            .then(ClientCommands.literal("dwarven")
+                                    .executes(ctx -> {
+                                        Minecraft.getInstance().execute(() -> DwarvenCommissionMacro.toggle(Minecraft.getInstance()));
                                         return 1;
                                     }))
                             .then(ClientCommands.literal("metaldetector")
