@@ -17,6 +17,7 @@ import dev.aether.modules.dwarven.memory.HuntPoints;
 import dev.aether.modules.dwarven.memory.SpotMemory;
 import dev.aether.modules.dwarven.mine.DwarvenMiner;
 import dev.aether.modules.dwarven.nav.AreaNavigator;
+import dev.aether.modules.dwarven.nav.NavFailures;
 import dev.aether.modules.dwarven.world.OreKind;
 import dev.aether.modules.dwarven.world.OreScanner;
 import dev.aether.modules.rotation.RotationManager;
@@ -57,6 +58,9 @@ public final class DwarvenCommissionMacro {
     private static final long FIGHT_STALL_MS = 90_000L;
     private static final double NEAR_HUNT_POINT = 24.0;
     private static final double RAID_SIGHT = 40.0;
+    private static final long WRONG_ZONE_MS = 4000L;
+    private static final Map<String, String> lastFailure = new HashMap<>();
+    private static long wrongZoneSince;
     private static final int FIGHT_STALL_HITS = 8;
     private static final long SWITCH_WHILE_WAITING_MS = 20_000L;
     private static int hitsAtLastProgress;
@@ -428,6 +432,11 @@ public final class DwarvenCommissionMacro {
         goWork(client, now);
     }
 
+    private static String lastFailureFor(DwarvenCommission c) {
+        String why = lastFailure.get(c.name());
+        return why == null ? "unknown" : why;
+    }
+
     private static String whyNothing(List<DwarvenCommission> list, List<String> unknown) {
         List<String> reasons = new ArrayList<>();
         for (DwarvenCommission c : list) {
@@ -439,7 +448,7 @@ public final class DwarvenCommissionMacro {
                         ? (AetherConfig.DWARVEN_EVENTS.get() ? "only joined while a raid runs where it is" : "events are turned off in settings")
                         : "this event isn't supported yet";
                 case UNKNOWN -> "not a commission it knows yet";
-                case MINING -> skipped.containsKey(c.name()) ? "resting after failures"
+                case MINING -> skipped.containsKey(c.name()) ? "resting after failures (" + lastFailureFor(c) + ")"
                         : o.area() != null && unknown.contains(o.area()) ? "hasn't seen " + o.area() + " yet" : "turned off in settings";
             };
             reasons.add(c.name() + " (" + reason + ")");
@@ -453,6 +462,10 @@ public final class DwarvenCommissionMacro {
         return out.toString();
     }
 
+    private static boolean wrongZone(Objective o) {
+        return o.kind() == Objective.Kind.MINING && o.area() != null && !zone.isEmpty() && !zone.equalsIgnoreCase(o.area());
+    }
+
     private static boolean raidHere(Minecraft client) {
         if (!AetherConfig.DWARVEN_EVENTS.get() || !GoblinRaid.active(ClientUtils.getSidebarLines())) return false;
         return DwarvenFighter.anyVisible(client, GoblinRaid.MOBS, RAID_SIGHT);
@@ -462,6 +475,8 @@ public final class DwarvenCommissionMacro {
         if (o.kind() == Objective.Kind.EVENT) return 0;
         BlockPos target = destination(o, feet, now);
         if (target == null) return o.anywhere() ? 0 : 600;
+        // a destination whose route keeps failing from here costs a lot, so the scheduler prefers something reachable
+        if (NavFailures.blocked(target, feet, now)) return 900 + AreaNavigator.travelSeconds(feet, target);
         return AreaNavigator.travelSeconds(feet, target);
     }
 
@@ -480,7 +495,8 @@ public final class DwarvenCommissionMacro {
             if (spot != null && spot.blocks > 0 && (inRange || o.area() != null)) return spot.pos;
         }
         if (o.area() == null) return null;
-        return DwarvenStore.AREAS.nearestPoint(o.area(), feet);
+        // a goal that keeps failing from here is swapped for another part of the same area
+        return DwarvenStore.AREAS.nearestPoint(o.area(), feet, NavFailures.failedGoalsFrom(feet, now), 16);
     }
 
     private static boolean inArea(Objective o, BlockPos feet) {
@@ -516,9 +532,28 @@ public final class DwarvenCommissionMacro {
         // being in the right zone is what matters, not the exact point we aimed for
         boolean there = navigator.status() == AreaNavigator.Status.ARRIVED
                 || (objective.area() != null && zone.equalsIgnoreCase(objective.area()) && Math.sqrt(feet.distSqr(navigator.goal())) < 12);
+        if (there && wrongZone(objective)) {
+            // arriving at a remembered point isn't arriving in the area; the scoreboard has the final word
+            navigator.stop(client);
+            DwarvenLog.log("vein: reached " + feet.toShortString() + " for " + objective.area() + " but the scoreboard says " + zone
+                    + "; forgetting that point and picking another");
+            DwarvenStore.AREAS.reject(objective.area(), feet);
+            NavFailures.record(navigator.goal(), feet, "wrong area", now);
+            RetryBudget.Verdict v = budget.fail(Failure.WRONG_AREA);
+            if (!v.retry()) {
+                budget.succeeded(Failure.WRONG_AREA);
+                skipped.put(current.name(), now + restMs());
+                current = null;
+                enter(Stage.OBSERVE, "couldn't find the real " + objective.area());
+            } else {
+                goWork(client, now);
+            }
+            return;
+        }
         if (there) {
             navigator.stop(client);
             budget.succeeded(Failure.NAVIGATION);
+            budget.succeeded(Failure.WRONG_AREA);
             startWork(client, now);
             return;
         }
@@ -528,6 +563,7 @@ public final class DwarvenCommissionMacro {
             if (!v.retry()) {
                 budget.succeeded(Failure.NAVIGATION);
                 skipped.put(current.name(), now + restMs());
+                lastFailure.put(current.name(), "can't reach it: " + navigator.failure());
                 DwarvenLog.log("can't reach " + current.name() + " (" + navigator.failure() + "), leaving it for " + AetherConfig.DWARVEN_REST_MINUTES.get() + " minutes");
                 current = null;
                 enter(Stage.OBSERVE, "navigation gave up");
@@ -691,6 +727,21 @@ public final class DwarvenCommissionMacro {
         if (client.gui.screen() != null) {
             pauseWork(client);
             return;
+        }
+        if (wrongZone(objective)) {
+            if (wrongZoneSince == 0) wrongZoneSince = now;
+            if (now - wrongZoneSince > WRONG_ZONE_MS) {
+                wrongZoneSince = 0;
+                // mining here wouldn't count for this commission; drop these cells from the area and go back in
+                DwarvenLog.log("vein: mining position " + client.player.blockPosition().toShortString() + " is in " + zone + ", not "
+                        + objective.area() + "; repositioning");
+                DwarvenStore.AREAS.reject(objective.area(), client.player.blockPosition());
+                stopWork(client);
+                goWork(client, now);
+                return;
+            }
+        } else {
+            wrongZoneSince = 0;
         }
         miner.zone(zone);
         miner.tick(client);

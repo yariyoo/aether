@@ -100,4 +100,50 @@ class LifecycleTests {
         assertTrue(reloaded.waypoints(new BlockPos(0, 100, 0), new BlockPos(64, 120, 0), 4, 24, EnumSet.allOf(HopKind.class)).isEmpty());
         assertFalse(reloaded.waypoints(new BlockPos(0, 100, 0), new BlockPos(4, 100, 0), 4, 24, Set.of()).isEmpty());
     }
+
+    @Test
+    void aCutRouteStillGoesAsFarAsKnownGroundAllows() {
+        TrailMemory trails = new TrailMemory();
+        trails.seedPath(List.of(new BlockPos(0, 100, 0), new BlockPos(5, 100, 0), new BlockPos(10, 100, 0), new BlockPos(15, 100, 0)));
+        Hop cut = new Hop(HopKind.ETHERWARP, 15.5, 100, 0.5, 60.5, 120, 0.5);
+        trails.seedPath(List.of(new BlockPos(60, 120, 0), new BlockPos(64, 120, 0)));
+        trails.seedHop(cut);
+        var all = EnumSet.allOf(HopKind.class);
+        assertTrue(trails.waypoints(new BlockPos(0, 100, 0), new BlockPos(64, 120, 0), 4, 24, all, Set.of(cut)).isEmpty());
+        var toward = trails.waypointsToward(new BlockPos(0, 100, 0), new BlockPos(64, 120, 0), 4, 24, all, Set.of(cut));
+        assertFalse(toward.isEmpty());
+        assertEquals(new BlockPos(15, 100, 0), toward.get(toward.size() - 1).pos());
+        // standing at the end of known ground, there is nothing closer left to walk to
+        assertTrue(trails.waypointsToward(new BlockPos(15, 100, 0), new BlockPos(64, 120, 0), 4, 24, all, Set.of(cut)).isEmpty());
+    }
+
+    @Test
+    void aTripThatKeepsFailingFromTheSamePlaceIsBlockedUntilSomethingChanges() {
+        dev.aether.modules.dwarven.nav.NavFailures.clear();
+        BlockPos goal = new BlockPos(-3, 128, 147), forge = new BlockPos(0, 149, -69);
+        long now = 1_000_000L;
+        dev.aether.modules.dwarven.nav.NavFailures.record(goal, forge, "no path", now);
+        assertFalse(dev.aether.modules.dwarven.nav.NavFailures.blocked(goal, forge, now));
+        dev.aether.modules.dwarven.nav.NavFailures.record(goal, forge.offset(3, 0, 2), "no path", now + 1000);
+        assertTrue(dev.aether.modules.dwarven.nav.NavFailures.blocked(goal, forge, now + 2000));
+        // from a genuinely different starting place it may be tried again
+        assertFalse(dev.aether.modules.dwarven.nav.NavFailures.blocked(goal, new BlockPos(100, 150, 30), now + 2000));
+        // and the record expires
+        assertFalse(dev.aether.modules.dwarven.nav.NavFailures.blocked(goal, forge, now + 11 * 60_000L));
+        dev.aether.modules.dwarven.nav.NavFailures.record(goal, forge, "no path", now);
+        dev.aether.modules.dwarven.nav.NavFailures.succeeded(goal);
+        assertTrue(dev.aether.modules.dwarven.nav.NavFailures.failedGoalsFrom(forge, now).isEmpty());
+    }
+
+    @Test
+    void aWronglyLabelledAreaPointIsForgottenAndFailedGoalsAreAvoided() {
+        var areas = new dev.aether.modules.dwarven.memory.AreaMemory();
+        areas.observe("Rampart's Quarry", new BlockPos(-80, 150, -10));
+        areas.observe("Rampart's Quarry", new BlockPos(-2, 128, 63));
+        BlockPos near = new BlockPos(0, 128, 60);
+        assertTrue(areas.nearestPoint("Rampart's Quarry", near).distSqr(new BlockPos(-2, 128, 63)) < 16);
+        assertTrue(areas.nearestPoint("Rampart's Quarry", near, List.of(new BlockPos(-2, 128, 62)), 16).distSqr(new BlockPos(-80, 150, -10)) < 16);
+        areas.reject("Rampart's Quarry", new BlockPos(-2, 128, 63));
+        assertTrue(areas.nearestPoint("Rampart's Quarry", near).distSqr(new BlockPos(-80, 150, -10)) < 16);
+    }
 }
