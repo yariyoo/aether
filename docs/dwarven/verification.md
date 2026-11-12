@@ -74,6 +74,54 @@ existing trail tests pass. Not yet verified in game: why that particular throw l
 range and visibility checks rule out two causes; if it keeps happening, the `[NAV] etherwarp completed` line
 now shows launch, expected and actual positions to compare.
 
+## Efficiency pass (13:57 log): navigation dead ends, unreachable stands, Goblin Slayer, dig restarts
+
+What the log showed, and the cause found in the code:
+- **Lift and Village starts never moved.** Known ground there is a dead end, but the forge decision compared
+  straight-line walking time and stayed put. It now asks whether a plan from here actually reaches the goal;
+  if not, it warps to the forge. Any plan that ends with nowhere left to go also falls back to the forge, unless
+  that trip already failed from the forge.
+- **Goblin Slayer hunted in Forge Basin.** The bundled hunt points mixed in mobs from a Goblin Raid in Forge
+  Basin during the recording, so (21, 144, -3) was "the busiest Goblin Burrows spawn". Being near a hunt point
+  also counted as being in the area. Now: those 7 points are removed from the seed, and every hunt point, saved
+  spawn and target is filtered by the zone it was seen in. Being in the area for combat needs the scoreboard to
+  say so; arriving elsewhere forgets that spot and picks another, and only sightings made inside the area are
+  learned.
+- **"Mining never started (attack held...)".** Not mouse capture. `MacroInput.setAttack` only holds the key, which
+  never counts as a click. On the same block again (after it turned into titanium, or on the restart), the game
+  carries on its old client-side dig and never sends the start-breaking packet. The re-press now sends a real
+  click. The first dig on a new block was never affected.
+- **Walking 10s to stands it couldn't reach.** Before moving, a flood fill over loaded blocks (one-block climbs,
+  drops up to three, slabs and stairs count as floor) rejects stands with no walk to them, and stands known to
+  be in another zone. If nothing passes, it tries the best stand anyway as before. Once a walk is moving, 2.5s
+  without getting closer ends it, instead of the full stuck timeout.
+
+Also added:
+- Teleports that missed recently cost more in route search (Route Reliability Weight), so a slightly longer
+  dependable route wins a close call. Planning time is measured and logged per plan.
+- Goblin Slayer weapon priority, read from item lore: Hyperion with Wither Impact (and enough mana by the action
+  bar), then Terminator, then the hardest-hitting sword or shortbow, then the mining tool. Hyperion casts looking
+  straight down only with an eligible goblin within 6 blocks, and prefers targets in groups. Shortbows shoot
+  from range when there's line of sight. A weapon whose hits take no health off 4 times in a row is dropped for
+  the next one. No usable weapon rests that commission instead of stopping the macro. Other combat commissions
+  still use the mining tool.
+- Kill credit: mob types whose confirmed kills never move the commission are dropped from the hunt after 5.
+  Golden and Diamond Goblins are included and checked the same way.
+- HUD stats: time per commission and travel per commission, navigation success and planning time, time spent
+  waiting out failures, kills per minute, and the weapon with the reason it was picked.
+
+Verified here: `EfficiencyTests` (weapon priority, mana parsing, kill credit, walk reach, Lift-to-forge
+fallback, reliability penalty, area-filtered spawns, the seed's goblin spawns all in the burrows) and
+`NavigationRecoveryTests`. Not yet verified in game: Wither Impact and Terminator behaviour, the re-press click
+fix, and the walk check on real terrain.
+
+Settings from the brief that were not added because nothing would sit behind them: Fast Pathfinding, Prefer
+Cached Routes and Maximum Route Planning Budget (graph planning measures in milliseconds), Combat Strategy and a
+separate Weapon Priority order (the per-weapon toggles cover it), Cluster Mining Optimization (stands are already
+chosen for the most ore in reach). Already present under other names: Prefer Teleport Shortcuts (Use Etherwarp),
+Route Learning (Learn And Reuse Walked Routes), Fast Target Switching (Combat Mode), Spawn Location Learning,
+Persistent Respawn Search.
+
 ## Known limits
 
 - Stop after X HOTM XP and HOTM XP per hour: the recorded claim rewards list Mithril Powder and Mining Exp, not HOTM
