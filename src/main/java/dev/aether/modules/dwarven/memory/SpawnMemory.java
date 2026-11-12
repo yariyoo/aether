@@ -78,13 +78,19 @@ public final class SpawnMemory {
 
     // the best place to wait: busy, close, and not just found empty
     public BlockPos best(Collection<String> mobs, BlockPos from, long now, long emptyRecheckMs, Set<BlockPos> avoid) {
+        return best(mobs, from, now, emptyRecheckMs, avoid, p -> true);
+    }
+
+    // allowed keeps the choice inside the hunt's own area
+    public BlockPos best(Collection<String> mobs, BlockPos from, long now, long emptyRecheckMs, Set<BlockPos> avoid,
+                         java.util.function.Predicate<BlockPos> allowed) {
         Spot best = null;
         double bestScore = 0;
         for (String m : mobs) {
             Map<Long, Spot> forMob = spots.get(key(m));
             if (forMob == null) continue;
             for (Spot s : forMob.values()) {
-                if (avoid.contains(s.pos) || s.lastEmpty > 0 && now - s.lastEmpty < emptyRecheckMs) continue;
+                if (avoid.contains(s.pos) || s.lastEmpty > 0 && now - s.lastEmpty < emptyRecheckMs || !allowed.test(s.pos)) continue;
                 double score = (0.5 + decayed(s, now)) / (1.0 + Math.sqrt(s.pos.distSqr(from)) / DISTANCE_SCALE);
                 if (score > bestScore) {
                     bestScore = score;
@@ -93,6 +99,14 @@ public final class SpawnMemory {
             }
         }
         return best == null ? null : best.pos;
+    }
+
+    // a spot shown to be in the wrong area is dropped outright
+    public void forget(BlockPos near, Collection<String> mobs, double radius) {
+        for (String m : mobs) {
+            Map<Long, Spot> forMob = spots.get(key(m));
+            if (forMob != null && forMob.values().removeIf(s -> s.pos.distSqr(near) <= radius * radius)) dirty = true;
+        }
     }
 
     public List<BlockPos> all(Collection<String> mobs) {

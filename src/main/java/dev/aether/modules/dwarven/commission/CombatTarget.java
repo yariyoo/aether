@@ -8,7 +8,8 @@ public record CombatTarget(Set<String> mobs, String area) {
     public static CombatTarget of(String commissionName) {
         String lower = commissionName.strip().toLowerCase(Locale.ROOT);
         return switch (lower) {
-            case "goblin slayer" -> new CombatTarget(Set.of("Goblin", "Knifethrower", "Fireslinger"), "Goblin Burrows");
+            // golden and diamond goblins are rare burrows goblins; any type whose kills never count is dropped while hunting
+            case "goblin slayer" -> new CombatTarget(Set.of("Goblin", "Knifethrower", "Fireslinger", "Golden Goblin", "Diamond Goblin"), "Goblin Burrows");
             case "glacite walker slayer" -> new CombatTarget(Set.of("Glacite Walker"), "Great Ice Wall");
             case "treasure hoarder puncher" -> new CombatTarget(Set.of("Treasure Hoarder"), null);
             case "star sentry puncher" -> new CombatTarget(Set.of("Star Sentry"), null);

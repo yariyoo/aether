@@ -52,6 +52,13 @@ public final class AreaMemory {
         return found;
     }
 
+    // a point belongs to an area unless it is known to be in a different one
+    public boolean allows(String area, BlockPos pos) {
+        if (area == null) return true;
+        String at = areaAt(pos);
+        return at == null || at.equalsIgnoreCase(area);
+    }
+
     public BlockPos nearestPoint(String area, BlockPos from) {
         return nearestPoint(area, from, java.util.List.of(), 0);
     }
