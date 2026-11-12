@@ -10,7 +10,8 @@ public final class CommissionScheduler {
 
     public record Choice(DwarvenCommission commission, Objective objective, double seconds, List<DwarvenCommission> alsoAdvanced) {}
 
-    public record Rules(Strategy strategy, boolean mithril, boolean titanium, boolean areaMining, boolean overlap, double switchGain) {}
+    public record Rules(Strategy strategy, boolean mithril, boolean titanium, boolean areaMining, boolean overlap, double switchGain,
+                        boolean combat) {}
 
     private static final double OVERLAP_CREDIT = 0.35;
 
@@ -55,6 +56,7 @@ public final class CommissionScheduler {
     }
 
     public static boolean allowed(Objective o, Rules rules) {
+        if (o.kind() == Objective.Kind.COMBAT) return rules.combat();
         if (o.kind() != Objective.Kind.MINING) return false;
         if (o.ore() == Objective.Ore.MITHRIL && !rules.mithril()) return false;
         if (o.ore() == Objective.Ore.TITANIUM && !rules.titanium()) return false;

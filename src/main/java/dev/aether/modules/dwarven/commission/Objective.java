@@ -17,8 +17,10 @@ public record Objective(Kind kind, Ore ore, String area) {
         for (String word : EVENT_WORDS) {
             if (lower.contains(word)) return new Objective(Kind.EVENT, null, null);
         }
+        CombatTarget combat = CombatTarget.of(name);
+        if (combat != null) return new Objective(Kind.COMBAT, null, combat.area());
         for (String word : COMBAT_WORDS) {
-            if (lower.contains(word)) return new Objective(Kind.COMBAT, null, null);
+            if (lower.contains(word)) return new Objective(Kind.UNKNOWN, null, null);
         }
         if (lower.equals("mithril miner")) return new Objective(Kind.MINING, Ore.MITHRIL, null);
         if (lower.equals("titanium miner")) return new Objective(Kind.MINING, Ore.TITANIUM, null);

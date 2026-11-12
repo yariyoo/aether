@@ -5,6 +5,7 @@ import dev.aether.modules.dwarven.commission.CommissionScheduler;
 import dev.aether.modules.dwarven.commission.CommissionScheduler.Rules;
 import dev.aether.modules.dwarven.commission.CommissionScheduler.Strategy;
 import dev.aether.modules.dwarven.commission.DwarvenCommission;
+import dev.aether.modules.dwarven.commission.CombatTarget;
 import dev.aether.modules.dwarven.commission.Objective;
 import dev.aether.modules.dwarven.commission.WorkStats;
 import org.junit.jupiter.api.Test;
@@ -17,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CommissionTests {
-    private static final Rules FASTEST = new Rules(Strategy.FASTEST, true, true, true, true, 0.25);
+    private static final Rules FASTEST = new Rules(Strategy.FASTEST, true, true, true, true, 0.25, true);
 
     @Test
     void readsTheTabListSection() {
@@ -76,7 +77,9 @@ class CommissionTests {
         var choice = CommissionScheduler.choose(list, FASTEST, null, o -> "Royal Mines".equals(o.area()) ? 40 : 5, c -> 60);
         // 40s travel + 12s of work left beats 5s travel + 60s of work
         assertEquals("Royal Mines Mithril", choice.commission().name());
-        assertNull(CommissionScheduler.choose(List.of(list.get(0)), FASTEST, null, o -> 0, c -> 60));
+        Rules noCombat = new Rules(Strategy.FASTEST, true, true, true, true, 0.25, false);
+        assertNull(CommissionScheduler.choose(List.of(list.get(0)), noCombat, null, o -> 0, c -> 60));
+        assertEquals("Goblin Slayer", CommissionScheduler.choose(List.of(list.get(0)), FASTEST, null, o -> 0, c -> 60).commission().name());
     }
 
     @Test
@@ -100,9 +103,9 @@ class CommissionTests {
 
     @Test
     void settingsSwitchCommissionKindsOff() {
-        Rules noTitanium = new Rules(Strategy.FASTEST, true, false, true, true, 0.25);
+        Rules noTitanium = new Rules(Strategy.FASTEST, true, false, true, true, 0.25, true);
         assertFalse(CommissionScheduler.allowed(Objective.of("Titanium Miner"), noTitanium));
-        Rules noAreas = new Rules(Strategy.FASTEST, true, true, false, true, 0.25);
+        Rules noAreas = new Rules(Strategy.FASTEST, true, true, false, true, 0.25, true);
         assertFalse(CommissionScheduler.allowed(Objective.of("Royal Mines Mithril"), noAreas));
         assertTrue(CommissionScheduler.allowed(Objective.of("Mithril Miner"), noAreas));
     }
@@ -130,5 +133,25 @@ class CommissionTests {
         assertTrue(budget.fail(RetryBudget.Failure.CLAIM).retry());
         budget.succeeded(RetryBudget.Failure.NAVIGATION);
         assertTrue(budget.fail(RetryBudget.Failure.NAVIGATION).retry());
+    }
+
+    @Test
+    void combatCommissionsKnowTheirMobsAndZone() {
+        assertEquals("Great Ice Wall", Objective.of("Glacite Walker Slayer").area());
+        assertEquals("Goblin Burrows", Objective.of("Goblin Slayer").area());
+        assertTrue(CombatTarget.of("Glacite Walker Slayer").mobs().contains("Glacite Walker"));
+        assertNull(Objective.of("Treasure Hoarder Puncher").area());
+        assertEquals(Objective.Kind.UNKNOWN, Objective.of("Some Future Slayer").kind());
+    }
+
+    @Test
+    void readsHypixelNameTags() {
+        var tag = dev.aether.modules.dwarven.fight.DwarvenFighter.parse("[Lv24] \uE06D Glacite Walker 888/888❤");
+        assertEquals("Glacite Walker", tag.name());
+        assertEquals(888.0, tag.health());
+        assertEquals(15_000.0, dev.aether.modules.dwarven.fight.DwarvenFighter.parse("[Lv61]  Treasure Hoarder 15,000/15,000❤").health());
+        assertEquals(1_200.0, dev.aether.modules.dwarven.fight.DwarvenFighter.parse("[Lv30] Goblin 1.2k/2k❤").health());
+        assertEquals(0.0, dev.aether.modules.dwarven.fight.DwarvenFighter.parse("[Lv3] Weakling 0/200❤").health());
+        assertNull(dev.aether.modules.dwarven.fight.DwarvenFighter.parse("Royal Pigeon"));
     }
 }
