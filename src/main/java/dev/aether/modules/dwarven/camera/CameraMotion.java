@@ -17,12 +17,31 @@ public final class CameraMotion {
     private float curveSign = 1f;
     private boolean arrived = true;
     private CameraProfile profile = CameraProfile.standard();
+    private float accel;
+    // this move's share of the profile's speed, acceleration and bend; drawn when a move starts and drifting from
+    // the last move's, so consecutive moves differ a little without ever jittering within one
+    private float speedK = 1f;
+    private float accelK = 1f;
+    private float curveK = 1f;
+    private float driftSpeed;
+    private float driftAccel;
+    private float driftCurve;
+    private final java.util.SplittableRandom random;
+
+    public CameraMotion() {
+        this(System.nanoTime());
+    }
+
+    public CameraMotion(long seed) {
+        random = new java.util.SplittableRandom(seed);
+    }
 
     public void reset(float yaw, float pitch) {
         this.yaw = yaw;
         this.pitch = pitch;
         this.yawSpeed = 0f;
         this.pitchSpeed = 0f;
+        this.accel = 0f;
         this.arrived = true;
     }
 
@@ -39,7 +58,32 @@ public final class CameraMotion {
         this.startDistance = distance();
         // alternate the side the path bows to, from the target itself so the same move always looks the same
         this.curveSign = ((Math.round(newTargetYaw * 7f) + Math.round(clamped * 13f)) & 1) == 0 ? 1f : -1f;
+        vary(profile.variation());
         this.arrived = startDistance <= profile.tolerance() && speed() < profile.minSpeed();
+    }
+
+    // each factor follows a slow random walk between moves, bounded by the variation amount
+    private void vary(float amount) {
+        if (amount <= 0f) {
+            speedK = accelK = curveK = 1f;
+            return;
+        }
+        driftSpeed = drift(driftSpeed);
+        driftAccel = drift(driftAccel);
+        driftCurve = drift(driftCurve);
+        speedK = 1f + 0.2f * amount * driftSpeed;
+        accelK = 1f + 0.2f * amount * driftAccel;
+        curveK = 1f + 0.6f * amount * driftCurve;
+        if (random.nextDouble() < 0.35 * amount) curveSign = -curveSign;
+    }
+
+    private float drift(float d) {
+        float next = 0.6f * d + 0.4f * (float) (random.nextDouble() * 2.0 - 1.0) * 1.6f;
+        return Math.max(-1f, Math.min(1f, next));
+    }
+
+    public float speedFactor() {
+        return speedK;
     }
 
     public void step(float seconds) {
@@ -63,14 +107,14 @@ public final class CameraMotion {
         float dirYaw = distance > 1e-4f ? errorYaw / distance : 0f;
         float dirPitch = distance > 1e-4f ? errorPitch / distance : 0f;
 
-        float wanted = wantedSpeed(distance);
+        float wanted = wantedSpeed(distance) * speedK;
         float wantYaw = dirYaw * wanted;
         float wantPitch = dirPitch * wanted;
 
         // bow the path sideways mid-move; the bend fades to nothing near the target so aim stays exact
         if (profile.curve() > 0f && startDistance > 8f) {
             float progress = 1f - Math.min(1f, distance / startDistance);
-            float bend = (float) Math.sin(Math.PI * progress) * profile.curve() * 0.5f * wanted * curveSign;
+            float bend = (float) Math.sin(Math.PI * progress) * Math.min(1f, profile.curve() * curveK) * 0.5f * wanted * curveSign;
             wantYaw += -dirPitch * bend;
             wantPitch += dirYaw * bend;
         }
@@ -84,11 +128,17 @@ public final class CameraMotion {
         float changePitch = wantPitch - pitchSpeed;
         float change = (float) Math.sqrt(changeYaw * changeYaw + changePitch * changePitch);
         boolean slowing = wantYaw * wantYaw + wantPitch * wantPitch < yawSpeed * yawSpeed + pitchSpeed * pitchSpeed;
-        float limit = (slowing ? profile.deceleration() : profile.acceleration()) * dt;
-        if (change > limit) {
-            changeYaw *= limit / change;
-            changePitch *= limit / change;
+        float limit = (slowing ? profile.deceleration() : profile.acceleration()) * accelK;
+        // the push may only build up at the jerk rate, which rounds off each start; easing off or braking is never
+        // held back, since a lagging brake is what makes a jerk-limited camera swing past its target
+        if (profile.jerk() > 0f && !slowing) limit = Math.min(limit, accel + profile.jerk() * dt);
+        float allowed = limit * dt;
+        if (change > allowed) {
+            changeYaw *= allowed / change;
+            changePitch *= allowed / change;
+            change = allowed;
         }
+        accel = dt > 0f ? change / dt : 0f;
         yawSpeed += changeYaw;
         pitchSpeed += changePitch;
 
@@ -117,7 +167,8 @@ public final class CameraMotion {
         float progress = startDistance > 1e-3f ? 1f - Math.min(1f, distance / startDistance) : 1f;
         float shaped = top * Math.max(0.15f, envelope(progress));
         // never faster than what can still be braked to a stop in the distance left
-        float brake = (float) Math.sqrt(2f * profile.deceleration() * Math.max(0f, distance - profile.tolerance() * 0.5f));
+        float decel = profile.deceleration() * accelK;
+        float brake = (float) Math.sqrt(2f * decel * Math.max(0f, distance - profile.tolerance() * 0.5f));
         return Math.max(Math.min(profile.minSpeed(), distance * 20f), Math.min(shaped, brake));
     }
 
@@ -135,6 +186,7 @@ public final class CameraMotion {
         pitch = targetPitch;
         yawSpeed = 0f;
         pitchSpeed = 0f;
+        accel = 0f;
         arrived = true;
     }
 

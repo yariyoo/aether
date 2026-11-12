@@ -467,7 +467,7 @@ public final class DwarvenFighter {
             FailsafeManager.selectHotbarSlot(client, w.slot());
             return;
         }
-        RotationManager.steerAngles(client, plan.yaw(), plan.pitch(), DwarvenCamera.profile());
+        RotationManager.steerAngles(client, plan.yaw(), plan.pitch(), DwarvenCamera.profile(DwarvenCamera.Activity.COMBAT));
         float yawOff = plan.moves() ? Math.abs(net.minecraft.util.Mth.wrapDegrees(plan.yaw() - client.player.getYRot())) : 0;
         float pitchOff = Math.abs(plan.pitch() - client.player.getXRot());
         if (yawOff > IMPACT_AIM_DEGREES || pitchOff > (plan.moves() ? IMPACT_AIM_DEGREES : 5.0f) || now - lastCastAt < CAST_GAP_MS) return;
@@ -554,7 +554,7 @@ public final class DwarvenFighter {
         }
         // arrows drop on the way; aim that much higher
         aim = aim.add(0, 0.5 * ARROW_GRAVITY * ticks * ticks, 0);
-        CameraProfile profile = AetherConfig.DWARVEN_RANGED_SMOOTH.get() ? DwarvenCamera.profile() : DwarvenCamera.quick();
+        CameraProfile profile = AetherConfig.DWARVEN_RANGED_SMOOTH.get() ? DwarvenCamera.profile(DwarvenCamera.Activity.COMBAT) : DwarvenCamera.quick();
         RotationManager.steer(client, aim, profile);
         RotationUtils.Rotation want = RotationUtils.calculateLookAt(client.player.getEyePosition(), aim);
         float yawOff = Math.abs(net.minecraft.util.Mth.wrapDegrees(want.yaw - client.player.getYRot()));
@@ -716,7 +716,7 @@ public final class DwarvenFighter {
             FailsafeManager.selectHotbarSlot(client, slot);
             return;
         }
-        RotationManager.steer(client, body, DwarvenCamera.profile());
+        RotationManager.steer(client, body, DwarvenCamera.profile(DwarvenCamera.Activity.COMBAT));
         HitResult hit = client.hitResult;
         boolean onTarget = hit instanceof EntityHitResult e && e.getEntity() == target;
         if (!onTarget) {

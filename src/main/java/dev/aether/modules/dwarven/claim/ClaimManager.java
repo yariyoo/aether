@@ -144,7 +144,7 @@ public final class ClaimManager {
                     finish(client, Status.FAILED);
                     return;
                 }
-                RotationManager.steer(client, npc.getBoundingBox().getCenter(), DwarvenCamera.profile());
+                RotationManager.steer(client, npc.getBoundingBox().getCenter(), DwarvenCamera.profile(DwarvenCamera.Activity.NAVIGATION));
                 if (client.hitResult instanceof EntityHitResult hit && hit.getEntity() == npc) {
                     if (++opens > MAX_OPENS) {
                         finish(client, Status.FAILED);
