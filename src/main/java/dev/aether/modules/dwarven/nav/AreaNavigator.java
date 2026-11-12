@@ -2,15 +2,30 @@ package dev.aether.modules.dwarven.nav;
 
 import dev.aether.config.AetherConfig;
 import dev.aether.modules.dwarven.DwarvenLog;
+import dev.aether.modules.dwarven.camera.DwarvenCamera;
 import dev.aether.modules.dwarven.memory.DwarvenStore;
+import dev.aether.modules.dwarven.memory.TrailMemory;
+import dev.aether.modules.dwarven.memory.TrailMemory.HopKind;
+import dev.aether.modules.dwarven.memory.TrailMemory.Waypoint;
+import dev.aether.modules.failsafe.FailsafeManager;
 import dev.aether.modules.gear.GearManager;
 import dev.aether.modules.pathfinding.PathfindingManager;
+import dev.aether.modules.pathfinding.etherwarp.EtherwarpHelper;
+import dev.aether.modules.rotation.RotationManager;
 import dev.aether.util.ClientUtils;
+import dev.aether.util.RotationUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 // gets the player to a far destination with aether's pathfinder, in short legs along ground it has walked before
@@ -28,12 +43,27 @@ public final class AreaNavigator {
     private static final double WALK_SPEED = 5.0;
     private static final double UNKNOWN_GROUND_FACTOR = 1.5;
     private static final double ETHERWARP_MIN_DISTANCE = 30.0;
+    private static final double AT_FORGE = 12.0;
+    // a hop is aimed from where we stand, so it can land a few blocks from where the recording did
+    private static final double HOP_LANDING_TOLERANCE = 4.5;
+    private static final double HOP_MOVED = 2.5;
+    private static final long HOP_WAIT_MS = 1500L;
+    private static final long HOP_AIM_LIMIT_MS = 2500L;
+    private static final float HOP_AIM_DEGREES = 1.2f;
+    // the server only sees the sneak a tick or two after the key goes down
+    private static final int SNEAK_SETTLE_TICKS = 3;
 
     private Status status = Status.IDLE;
     private BlockPos goal;
     private String label;
     private double arriveWithin;
-    private List<BlockPos> legs = List.of();
+    private List<Waypoint> legs = List.of();
+    private boolean hopping;
+    private boolean hopClicked;
+    private Vec3 hopAim;
+    private Vec3 hopLaunch;
+    private long hopSince;
+    private int sneakTicks;
     private int legAt;
     private int attempts;
     private boolean etherwarpLeg;
@@ -62,7 +92,7 @@ public final class AreaNavigator {
 
     // seconds to walk somewhere: along known trails when they connect, otherwise a padded straight line
     public static double walkSeconds(BlockPos from, BlockPos to) {
-        double trail = AetherConfig.DWARVEN_LEARN_TRAILS.get() ? DwarvenStore.TRAILS.routeLength(from, to, JOIN) : -1;
+        double trail = AetherConfig.DWARVEN_LEARN_TRAILS.get() ? DwarvenStore.TRAILS.routeLength(from, to, JOIN, EnumSet.allOf(HopKind.class)) : -1;
         double blocks = trail >= 0 ? trail : Math.sqrt(from.distSqr(to)) * UNKNOWN_GROUND_FACTOR;
         return blocks / WALK_SPEED;
     }
@@ -99,26 +129,47 @@ public final class AreaNavigator {
     }
 
     public void stop(Minecraft client) {
-        if (status == Status.RUNNING && !warping) PathfindingManager.stop();
+        if (status == Status.RUNNING && !warping && !hopping) PathfindingManager.stop();
+        if (hopping) endHop(client);
         warping = false;
         if (status == Status.RUNNING) status = Status.IDLE;
     }
 
     private void plan(Minecraft client) {
         BlockPos feet = client.player.blockPosition();
-        List<BlockPos> route = new ArrayList<>();
-        if (AetherConfig.DWARVEN_LEARN_TRAILS.get()) route.addAll(DwarvenStore.TRAILS.route(feet, goal, JOIN, LEG));
+        List<Waypoint> route = new ArrayList<>();
+        Set<HopKind> kinds = hopKinds(client);
+        if (AetherConfig.DWARVEN_LEARN_TRAILS.get()) route.addAll(DwarvenStore.TRAILS.waypoints(feet, goal, JOIN, LEG, kinds));
         boolean known = !route.isEmpty();
-        if (route.isEmpty() || route.get(route.size() - 1).distSqr(goal) > 4) route.add(goal);
+        if (route.isEmpty() || route.get(route.size() - 1).pos().distSqr(goal) > 4) route.add(new Waypoint(goal, null));
         legs = route;
         legAt = 0;
-        DwarvenLog.log(String.format("nav: to %s at %s, %.0f blocks, %s", label, goal.toShortString(),
-                Math.sqrt(feet.distSqr(goal)), known ? (legs.size() + " legs along known ground") : "no known trail, pathfinding straight there"));
+        long hopCount = route.stream().filter(w -> w.hop() != null).count();
+        DwarvenLog.log(String.format("nav: to %s at %s, %.0f blocks, %s", label, goal.toShortString(), Math.sqrt(feet.distSqr(goal)),
+                known ? (legs.size() + " legs along known ground, " + hopCount + " of them teleports") : "no known trail, pathfinding straight there"));
         startLeg(client);
     }
 
+    private static Set<HopKind> hopKinds(Minecraft client) {
+        Set<HopKind> kinds = EnumSet.noneOf(HopKind.class);
+        if (!AetherConfig.DWARVEN_USE_ETHERWARP.get()) return kinds;
+        if (aotvSlot(client) >= 0) kinds.add(HopKind.AOTV);
+        if (GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(client) >= 0) kinds.add(HopKind.ETHERWARP);
+        return kinds;
+    }
+
+    private static int aotvSlot(Minecraft client) {
+        int slot = GearManager.findHotbarItemSlot(client, "Aspect of the Void");
+        return slot >= 0 ? slot : GearManager.findHotbarItemSlot(client, "Aspect of the End");
+    }
+
     private void startLeg(Minecraft client) {
-        BlockPos to = legs.get(legAt);
+        Waypoint w = legs.get(legAt);
+        if (w.hop() != null && hopKinds(client).contains(w.hop().kind())) {
+            startHop(client, w.hop());
+            return;
+        }
+        BlockPos to = w.pos();
         BlockPos feet = client.player.blockPosition();
         double distance = Math.sqrt(feet.distSqr(to));
         boolean canEtherwarp = AetherConfig.DWARVEN_USE_ETHERWARP.get() && GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(client) >= 0;
@@ -146,13 +197,17 @@ public final class AreaNavigator {
             tickWarp(client, feet, now);
             return;
         }
+        if (hopping) {
+            tickHop(client, now);
+            return;
+        }
         if (Math.sqrt(feet.distSqr(goal)) <= arriveWithin) {
             PathfindingManager.stop();
             status = Status.ARRIVED;
             DwarvenLog.log("nav: reached " + label + " at " + feet.toShortString());
             return;
         }
-        BlockPos to = legs.get(legAt);
+        BlockPos to = legs.get(legAt).pos();
         double left = Math.sqrt(feet.distSqr(to));
         boolean lastLeg = legAt == legs.size() - 1;
         if (result.get() == 1 || (!lastLeg && left <= LEG_REACHED)) {
@@ -196,7 +251,9 @@ public final class AreaNavigator {
             }
             return;
         }
-        if (!warpTried && AetherConfig.DWARVEN_FORGE_WARP.get()) {
+        BlockPos forge = forgeLanding(client.player.blockPosition());
+        boolean atForge = forge != null && Math.sqrt(forge.distSqr(client.player.blockPosition())) < AT_FORGE;
+        if (!warpTried && !atForge && AetherConfig.DWARVEN_FORGE_WARP.get()) {
             DwarvenLog.log("nav: out of retries, warping to the forge to come at it from there");
             warp(client);
             return;
@@ -211,6 +268,8 @@ public final class AreaNavigator {
         warpFrom = client.player.blockPosition();
         warpAt = System.currentTimeMillis();
         DwarvenStore.TRAILS.interrupted();
+        // the warp turns the camera; that's ours, not a staff check
+        FailsafeManager.addRotationGracePeriod(AetherConfig.FAILSAFE_ROTATION_WARP_GRACE_MS.get());
         ClientUtils.sendCommand("/warp forge");
     }
 
@@ -230,5 +289,107 @@ public final class AreaNavigator {
             attempts = 0;
             plan(client);
         }
+    }
+
+    private void startHop(Minecraft client, TrailMemory.Hop hop) {
+        hopping = true;
+        hopClicked = false;
+        hopSince = System.currentTimeMillis();
+        sneakTicks = 0;
+        hopAim = null;
+        etherwarpLeg = hop.kind() == HopKind.ETHERWARP;
+        PathfindingManager.stop();
+    }
+
+    private void tickHop(Minecraft client, long now) {
+        TrailMemory.Hop hop = legs.get(legAt).hop();
+        boolean ether = hop.kind() == HopKind.ETHERWARP;
+        Vec3 pos = client.player.position();
+        if (hopClicked) {
+            if (pos.distanceTo(hopLaunch) > HOP_MOVED) {
+                endHop(client);
+                double off = pos.distanceTo(new Vec3(hop.toX(), hop.toY(), hop.toZ()));
+                DwarvenStore.TRAILS.interrupted();
+                if (off > HOP_LANDING_TOLERANCE) {
+                    legFailed(client, String.format("%s landed %.1f blocks off", hop.kind(), off));
+                    return;
+                }
+                legAt++;
+                attempts = 0;
+                if (legAt >= legs.size()) {
+                    status = Math.sqrt(client.player.blockPosition().distSqr(goal)) <= arriveWithin ? Status.ARRIVED : status;
+                    if (status != Status.ARRIVED) plan(client);
+                    return;
+                }
+                startLeg(client);
+            } else if (now - hopSince > HOP_WAIT_MS) {
+                endHop(client);
+                legFailed(client, hop.kind() + " didn't teleport (out of mana or blocked?)");
+            }
+            return;
+        }
+        int slot = ether ? GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(client) : aotvSlot(client);
+        if (slot < 0) {
+            endHop(client);
+            legFailed(client, "no aotv in the hotbar for the " + hop.kind());
+            return;
+        }
+        if (now - hopSince > HOP_AIM_LIMIT_MS) {
+            endHop(client);
+            legFailed(client, hop.kind() + " never lined up");
+            return;
+        }
+        if (FailsafeManager.getCurrentSelectedSlot(client) != slot) {
+            FailsafeManager.selectHotbarSlot(client, slot);
+            return;
+        }
+        if (ether) {
+            ClientUtils.setKeyMappingState(client.options.keyShift, true);
+            if (++sneakTicks < SNEAK_SETTLE_TICKS) return;
+        }
+        if (hopAim == null) {
+            hopAim = aim(client, hop);
+            if (hopAim == null) {
+                endHop(client);
+                legFailed(client, "can't see where the " + hop.kind() + " lands from here");
+                return;
+            }
+        }
+        // hypixel traces etherwarp from its own sneaking eye height, not the modern client's
+        Vec3 eye = ether ? EtherwarpHelper.getEyePosition(client, pos) : client.player.getEyePosition();
+        RotationUtils.Rotation want = RotationUtils.calculateLookAt(eye, hopAim);
+        FailsafeManager.addRotationGracePeriod(AetherConfig.FAILSAFE_ROTATION_WARP_GRACE_MS.get());
+        RotationManager.steerAngles(client, want.yaw, want.pitch, DwarvenCamera.profile());
+        float yawOff = Math.abs(Mth.wrapDegrees(want.yaw - client.player.getYRot()));
+        float pitchOff = Math.abs(want.pitch - client.player.getXRot());
+        if (yawOff > HOP_AIM_DEGREES || pitchOff > HOP_AIM_DEGREES) return;
+        hopLaunch = pos;
+        hopClicked = true;
+        hopSince = now;
+        ClientUtils.performUseClickInstant();
+    }
+
+    private Vec3 aim(Minecraft client, TrailMemory.Hop hop) {
+        Vec3 pos = client.player.position();
+        if (hop.kind() == HopKind.AOTV) {
+            return new Vec3(hop.toX(), hop.toY() + client.player.getEyeHeight(), hop.toZ());
+        }
+        BlockPos target = BlockPos.containing(hop.toX(), Math.floor(hop.toY() + 0.01) - 1, hop.toZ());
+        Vec3 eye = EtherwarpHelper.getEyePosition(client, pos);
+        double[][] offsets = {{0.5, 0.5, 0.5}, {0.5, 0.95, 0.5}, {0.2, 0.9, 0.2}, {0.8, 0.9, 0.8}, {0.2, 0.9, 0.8}, {0.8, 0.9, 0.2}};
+        for (double[] o : offsets) {
+            Vec3 point = new Vec3(target.getX() + o[0], target.getY() + o[1], target.getZ() + o[2]);
+            Vec3 end = eye.add(point.subtract(eye).normalize().scale(61.0));
+            BlockHitResult hit = client.level.clip(new ClipContext(eye, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, client.player));
+            if (hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(target)) return point;
+        }
+        // the recording proves the warp works from its start, even if our ray clips something on the way
+        Vec3 start = new Vec3(hop.fromX(), hop.fromY(), hop.fromZ());
+        return pos.distanceTo(start) < 1.5 ? Vec3.atCenterOf(target) : null;
+    }
+
+    private void endHop(Minecraft client) {
+        hopping = false;
+        if (client.options != null) ClientUtils.setKeyMappingState(client.options.keyShift, false);
     }
 }
