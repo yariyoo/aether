@@ -210,6 +210,45 @@ Minecraft types. The CI build compiles the whole mod. Not verified in game: how 
 cut the idle time, whether learned teleports help, and the real Mithril break times. Goblin Slayer combat logic
 was not changed; it only moved to the combat camera profile, and it remains unverified in game.
 
+## Self-learning navigation and Goblin Slayer handoff (19:56 log)
+
+What the log showed, and why:
+- Goblin Slayer never reached combat. The trip arrived at -148,148,94, the scoreboard said "Dwarven Mines", and
+  the destination was ruled out as the wrong area. Three nearby destinations went the same way, then the forge reset.
+  The combat code (Hyperion, mana fallback, Terminator) never ran. Fix: Goblin Slayer is no longer tied to the zone
+  line. Goblins seen in range (in sight, or within 8 blocks) end the trip and start the fight. A place counts as
+  arrived when goblins are there or a place they were killed is close. Kill credit and the progress stall check
+  still catch kills that don't count.
+- 129.3s "standing still between route legs" was mostly a measuring bug. The end time of a trip's last leg was
+  never cleared, so the next trip's first step, after a whole mining session, was counted as idle. It's now cleared
+  on arrival and failure, and any single gap over 15s isn't counted.
+- Etherwarp-pathfinder legs failed 4 times in the log, taking 3 to 12s each. They are now priced by their own
+  record (success rate, time when they work, time when they fail, then the walk anyway). With no record, or a bad
+  one, legs walk.
+- Teleports with "no room to stand on its landing block" or "couldn't stand on its start" were only banned for the
+  current trip. They are now left out of planning across restarts: 30 minutes, then 3 hours, then a day, then a
+  week. An etherwarp is brought back early if its landing is seen clear again. Etherwarps on a fresh plan whose
+  landing is already visibly blocked are dropped before walking to them. Standing on a teleport start now gives up
+  after 3s without getting closer, instead of 8s.
+- Rampart's Quarry to Emissary Carlton warped to the forge because the route from where the player stood was
+  partial. The route from the forge was partial too, and walked back through the quarry. Two partial routes are
+  now compared by estimated time.
+- A trip that fails within 24 blocks of its goal no longer warps to the forge. If the work counts there, the macro
+  works from where it stopped.
+- Stuck walks now penalise the place the walk stalled, not the stop it was heading for.
+
+Learning across sessions (routes.json, plus fields added to trails.json and spawns.json):
+- every trip is recorded by start zone (or Forge) and destination: time, arrival or failure, teleports, recoveries.
+  After two arrivals the measured mean, plus the failure rate times 30s, replaces the estimate in the forge
+  decision. Logs: route completed, faster alternative discovered, reusing a historical route, and time saved
+  against the historical average.
+- hunting spots keep their kills and empty visits; spots are ranked by expected kills / (travel + fight + respawn
+  wait), and spots found empty are skipped for 3 minutes and then rank lower.
+
+Automated tests: LearningTests (11) plus all earlier classes, 99 tests in all, pass against stubs of the Minecraft
+types, and CI compiles the mod. Not verified in game: goblin detection in travel, the combat itself, and whether trips
+get quicker with history. Those need a session log.
+
 ## Known limits
 
 - Stop after X HOTM XP and HOTM XP per hour: the recorded claim rewards list Mithril Powder and Mining Exp, not HOTM
