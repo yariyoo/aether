@@ -1,0 +1,37 @@
+name: Dev Build
+
+# builds feature branches and keeps the jar as a run artifact; releases only ever come from build.yml on main
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "feat/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "25"
+          distribution: "temurin"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build
+        run: ./gradlew build --no-daemon 2>&1 | tee build.log
+      - name: Upload jar
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-dev-jar
+          path: build/libs/*.jar
+      - name: Upload build log and test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            build.log
+            build/test-results/test/*.xml
