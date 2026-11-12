@@ -37,6 +37,8 @@ public final class NavReport {
         StringBuilder b = new StringBuilder();
         b.append("=== ").append(header).append(" ===\n");
         b.append(line("route planning (graph search, cpu)", "nav.plan"));
+        b.append(line("walking leg (pathfinder walk)", "nav.leg.walk"));
+        b.append(line("etherwarp-pathfinder leg", "nav.leg.ether"));
         b.append(line("pathfinder start (request to first step)", "path.start"));
         b.append(line("walking leg", "nav.leg"));
         b.append(line("whole trip", "nav.trip"));
@@ -51,7 +53,15 @@ public final class NavReport {
         b.append(line("zone confirmation", "area.confirm"));
         b.append(line("stuck detection delay", "nav.stuck"));
         b.append(line("mining-position walk", "mine.walk"));
+        b.append(line("mining-position choice (cpu)", "mine.stand.select"));
+        b.append(line("block choice (cpu)", "mine.select"));
+        b.append(line("turn onto a block until the ray hits it", "rot.mine"));
         b.append(line("dig start", "mine.dig.start"));
+        b.append(line("time between confirmed breaks", "mine.between"));
+        for (String k : new String[]{"mithril_gray", "mithril_green", "mithril_blue", "titanium"}) b.append(line("break: " + k, "mine.break." + k));
+        b.append(String.format("teleports used: %d aotv, %d etherwarp; stuck events: %d on routes, %d on stand walks; failed stand walks: %d; failed legs: %d%n",
+                Ops.summary("hop.aotv.exec").count(), Ops.summary("hop.etherwarp.exec").count(), Ops.summary("nav.stuck").count(),
+                Ops.summary("mine.stuck").count(), Ops.summary("mine.walk.failed").count(), Ops.summary("nav.fail").count()));
         List<Waste> w = waste(extra);
         b.append("biggest sources of wasted time:\n");
         for (int i = 0; i < Math.min(3, w.size()); i++) b.append(String.format("  %d. %s: %.1fs%n", i + 1, w.get(i).what(), w.get(i).ms() / 1000.0));
@@ -62,7 +72,7 @@ public final class NavReport {
     private static String line(String label, String op) {
         Ops.Summary s = Ops.summary(op);
         if (s.count() == 0) return String.format("%-42s -%n", label);
-        return String.format("%-42s n=%d mean=%.1fms p95=%.1fms max=%.0fms total=%.1fs%n", label, s.count(), s.meanMs(), s.p95Ms(), s.maxMs(),
-                s.totalMs() / 1000.0);
+        return String.format("%-42s n=%d mean=%.1fms median=%.1fms p95=%.1fms max=%.0fms total=%.1fs%n", label, s.count(), s.meanMs(),
+                s.p50Ms(), s.p95Ms(), s.maxMs(), s.totalMs() / 1000.0);
     }
 }

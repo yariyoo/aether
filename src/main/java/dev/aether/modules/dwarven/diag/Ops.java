@@ -78,7 +78,11 @@ public final class Ops {
         }
     }
 
-    public record Summary(String name, int count, double meanMs, double p95Ms, double maxMs, double totalMs) {}
+    public record Summary(String name, int count, double meanMs, double p95Ms, double maxMs, double totalMs, double p50Ms) {
+        public Summary(String name, int count, double meanMs, double p95Ms, double maxMs, double totalMs) {
+            this(name, count, meanMs, p95Ms, maxMs, totalMs, 0);
+        }
+    }
 
     // kept in nanoseconds: route planning takes about a millisecond, which whole milliseconds would round away
     private static final class Stat {
@@ -100,10 +104,14 @@ public final class Ops {
 
         // over the most recent samples, nearest-rank
         double p95Ms() {
+            return percentileMs(0.95);
+        }
+
+        double percentileMs(double q) {
             if (recentN == 0) return 0;
             long[] s = Arrays.copyOf(recent, recentN);
             Arrays.sort(s);
-            int rank = (int) Math.ceil(0.95 * recentN) - 1;
+            int rank = (int) Math.ceil(q * recentN) - 1;
             return s[Math.max(0, Math.min(recentN - 1, rank))] / 1e6;
         }
     }
@@ -138,7 +146,7 @@ public final class Ops {
     public static synchronized Summary summary(String name) {
         Stat s = STATS.get(name);
         if (s == null) return new Summary(name, 0, 0, 0, 0, 0);
-        return new Summary(name, s.count, s.totalNs / 1e6 / s.count, s.p95Ms(), s.maxNs / 1e6, s.totalNs / 1e6);
+        return new Summary(name, s.count, s.totalNs / 1e6 / s.count, s.p95Ms(), s.maxNs / 1e6, s.totalNs / 1e6, s.percentileMs(0.5));
     }
 
     public static synchronized List<Summary> all() {
