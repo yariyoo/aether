@@ -19,6 +19,7 @@ public final class DwarvenStore {
     public static final SpotMemory SPOTS = new SpotMemory();
     public static final AreaMemory AREAS = new AreaMemory();
     public static final TrailMemory TRAILS = new TrailMemory();
+    public static final dev.aether.modules.dwarven.claim.Emissaries EMISSARIES = new dev.aether.modules.dwarven.claim.Emissaries();
     public static final WorkStats WORK = new WorkStats(75.0);
     private static boolean loaded;
     private static boolean workDirty;
@@ -33,6 +34,7 @@ public final class DwarvenStore {
         if ((o = read("areas.json")) != null) AREAS.load(o);
         if ((o = read("trails.json")) != null) TRAILS.load(o);
         if ((o = read("work.json")) != null) WORK.load(o);
+        if ((o = read("emissaries.json")) != null) EMISSARIES.load(o);
         seed();
         DwarvenLog.log("memory loaded: " + SPOTS.all().size() + " spots, " + TRAILS.size() + " trail points");
     }
@@ -85,6 +87,7 @@ public final class DwarvenStore {
         if (SPOTS.dirty()) write("spots.json", SPOTS.toJson());
         if (AREAS.dirty()) write("areas.json", AREAS.toJson());
         if (TRAILS.dirty()) write("trails.json", TRAILS.toJson());
+        if (EMISSARIES.dirty()) write("emissaries.json", EMISSARIES.toJson());
         if (workDirty) {
             write("work.json", WORK.toJson());
             workDirty = false;

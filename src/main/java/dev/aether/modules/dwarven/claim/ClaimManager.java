@@ -1,28 +1,32 @@
 package dev.aether.modules.dwarven.claim;
 
 import dev.aether.modules.dwarven.DwarvenLog;
+import dev.aether.modules.dwarven.camera.DwarvenCamera;
 import dev.aether.modules.dwarven.commission.CommissionReader;
 import dev.aether.modules.failsafe.FailsafeManager;
 import dev.aether.modules.gear.GearManager;
+import dev.aether.modules.rotation.RotationManager;
 import dev.aether.util.ClientUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.EntityHitResult;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-// claims finished commissions through the royal pigeon: open the menu, click what reads as completed, check it took
+// claims finished commissions through the royal pigeon or an emissary: open the menu, click what reads as completed, check it took
 public final class ClaimManager {
     public enum Status { IDLE, RUNNING, CLAIMED, NOTHING_TO_CLAIM, NO_PIGEON, FAILED }
 
-    private enum Step { HOLD, USE, WAIT_MENU, CLICK, CLOSE }
+    private enum Step { HOLD, USE, AIM_NPC, WAIT_MENU, CLICK, CLOSE }
 
     private static final String PIGEON = "Royal Pigeon";
     private static final long MENU_WAIT_MS = 3500L;
@@ -30,6 +34,7 @@ public final class ClaimManager {
     private static final long COOLDOWN_WAIT_MS = 5000L;
     private static final int MAX_CLICKS_PER_SLOT = 2;
     private static final int MAX_OPENS = 3;
+    private static final long NPC_AIM_LIMIT_MS = 3000L;
 
     private Status status = Status.IDLE;
     private Step step;
@@ -39,6 +44,11 @@ public final class ClaimManager {
     private int restoreSlot = -1;
     private long holdUntil;
     private final Map<Integer, Integer> clicks = new HashMap<>();
+    private Entity npc;
+
+    public static boolean hasPigeon(Minecraft client) {
+        return GearManager.findHotbarItemSlot(client, PIGEON) >= 0;
+    }
 
     public Status status() {
         return status;
@@ -61,8 +71,20 @@ public final class ClaimManager {
             return;
         }
         status = Status.RUNNING;
+        npc = null;
         restoreSlot = FailsafeManager.getCurrentSelectedSlot(client);
         enter(Step.HOLD);
+    }
+
+    // claim by right-clicking an emissary standing within reach
+    public void startEmissary(Minecraft client, Entity emissary) {
+        claimed = 0;
+        opens = 0;
+        clicks.clear();
+        npc = emissary;
+        restoreSlot = -1;
+        status = Status.RUNNING;
+        enter(Step.AIM_NPC);
     }
 
     public void reset() {
@@ -101,11 +123,31 @@ public final class ClaimManager {
                 ClientUtils.performUseClickInstant();
                 enter(Step.WAIT_MENU);
             }
+            case AIM_NPC -> {
+                if (npc == null || !npc.isAlive()) {
+                    finish(client, Status.FAILED);
+                    return;
+                }
+                if (now - stepSince > NPC_AIM_LIMIT_MS || client.player.distanceTo(npc) > 4.5) {
+                    DwarvenLog.log("claim: couldn't line up on the emissary");
+                    finish(client, Status.FAILED);
+                    return;
+                }
+                RotationManager.steer(client, npc.getBoundingBox().getCenter(), DwarvenCamera.profile());
+                if (client.hitResult instanceof EntityHitResult hit && hit.getEntity() == npc) {
+                    if (++opens > MAX_OPENS) {
+                        finish(client, Status.FAILED);
+                        return;
+                    }
+                    ClientUtils.performUseClickInstant();
+                    enter(Step.WAIT_MENU);
+                }
+            }
             case WAIT_MENU -> {
                 if (menu(client) != null) {
                     enter(Step.CLICK);
                 } else if (now - stepSince > MENU_WAIT_MS) {
-                    enter(Step.HOLD);
+                    enter(npc != null ? Step.AIM_NPC : Step.HOLD);
                 }
             }
             case CLICK -> click(client, now);
@@ -122,7 +164,7 @@ public final class ClaimManager {
         if (screen == null) {
             // closed under us; whatever we already claimed still counts
             if (claimed > 0) finish(client, Status.CLAIMED);
-            else enter(Step.HOLD);
+            else enter(npc != null ? Step.AIM_NPC : Step.HOLD);
             return;
         }
         if (now - stepSince < CLICK_GAP_MS) return;

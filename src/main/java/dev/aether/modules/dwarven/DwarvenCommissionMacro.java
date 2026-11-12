@@ -73,6 +73,8 @@ public final class DwarvenCommissionMacro {
     private static long lastLearnAt;
     private static long lastSaveAt;
     private static String lastNothingReason = "";
+    private static boolean claimTravel;
+    private static BlockPos claimEmissary;
     private static long unreadableSince;
     private static long outsideSince;
     private static long waitUntil;
@@ -203,6 +205,7 @@ public final class DwarvenCommissionMacro {
         zone = readZone();
         BlockPos feet = client.player.blockPosition();
         if (!zone.isEmpty() && client.player.onGround()) DwarvenStore.AREAS.observe(zone, feet);
+        DwarvenStore.EMISSARIES.observe(client);
         if (AetherConfig.DWARVEN_LEARN_TRAILS.get()) DwarvenStore.TRAILS.walked(feet, client.player.onGround());
         if (now - lastSaveAt > SAVE_EVERY_MS) {
             lastSaveAt = now;
@@ -317,8 +320,7 @@ public final class DwarvenCommissionMacro {
         boolean anyDone = commissions.stream().anyMatch(DwarvenCommission::done);
         // the tab list keeps saying DONE for a few seconds after a claim
         if (anyDone && now - lastClaimAt > TAB_LAG_MS) {
-            claims.start(client);
-            enter(Stage.CLAIM, "a commission is done");
+            startClaim(client);
             return;
         }
         choose(client, now);
@@ -629,7 +631,52 @@ public final class DwarvenCommissionMacro {
         enter(Stage.TRAVEL, "relocating");
     }
 
+    // 0 = pigeon, else walk to an emissary; 1 = pigeon only; 2 = emissary only
+    private static void startClaim(Minecraft client) {
+        int method = AetherConfig.DWARVEN_CLAIM_METHOD.get();
+        claimTravel = false;
+        if (method != 2 && ClaimManager.hasPigeon(client)) {
+            claims.start(client);
+            enter(Stage.CLAIM, "a commission is done (pigeon)");
+            return;
+        }
+        if (method == 1) {
+            halt(client, "a commission is done but there is no Royal Pigeon in the hotbar to claim it");
+            return;
+        }
+        var emissary = DwarvenStore.EMISSARIES.nearest(client.player.blockPosition());
+        if (emissary == null) {
+            halt(client, "a commission is done, there's no Royal Pigeon, and no Emissary has been seen yet (walk past one once)");
+            return;
+        }
+        claimEmissary = emissary.getValue();
+        claimTravel = true;
+        navigator.start(client, claimEmissary, emissary.getKey(), 3.0);
+        enter(Stage.CLAIM, "a commission is done (walking to " + emissary.getKey() + ")");
+    }
+
     private static void claim(Minecraft client, long now) {
+        if (claimTravel) {
+            navigator.tick(client);
+            if (navigator.status() == AreaNavigator.Status.FAILED) {
+                claimTravel = false;
+                RetryBudget.Verdict v = budget.fail(Failure.CLAIM);
+                if (!v.retry()) halt(client, "couldn't reach an Emissary to claim (" + navigator.failure() + ")");
+                else pause(v.waitMs(), "couldn't reach the emissary, try " + v.attempt());
+                return;
+            }
+            if (navigator.status() != AreaNavigator.Status.ARRIVED) return;
+            claimTravel = false;
+            var npc = dev.aether.modules.dwarven.claim.Emissaries.npcNear(client, claimEmissary, 6.0);
+            if (npc == null) {
+                DwarvenLog.log("claim: reached " + claimEmissary.toShortString() + " but no emissary is standing there");
+                RetryBudget.Verdict v = budget.fail(Failure.CLAIM);
+                if (!v.retry()) halt(client, "the Emissary wasn't where it was last seen");
+                else pause(v.waitMs(), "emissary missing, try " + v.attempt());
+                return;
+            }
+            claims.startEmissary(client, npc);
+        }
         claims.tick(client);
         switch (claims.status()) {
             case RUNNING -> { }
