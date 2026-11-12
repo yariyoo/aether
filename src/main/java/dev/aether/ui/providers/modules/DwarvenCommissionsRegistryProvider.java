@@ -82,7 +82,9 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(toggle("Adaptive Mining Timeout", AetherConfig.DWARVEN_ADAPTIVE_TIMEOUT))
                 .add(toggle("Automatic Repositioning", AetherConfig.DWARVEN_REPOSITION))
                 .add(toggle("Sneak While Mining", AetherConfig.DWARVEN_SNEAK))
-                .add(toggle("Use Pickaxe Ability", AetherConfig.DWARVEN_PICKAXE_ABILITY));
+                .add(toggle("Use Pickaxe Ability", AetherConfig.DWARVEN_PICKAXE_ABILITY))
+                .add(toggle("Prefer Reachable Mining Positions", AetherConfig.DWARVEN_PREFER_REACHABLE))
+                .add(slider("Mining Spot Reliability Weight", 0f, 5f, AetherConfig.DWARVEN_SPOT_RELIABILITY, 1));
 
         SettingGroup combat = SettingGroup.alwaysOn("Combat", "Slayer and puncher commissions, fought with the mining tool")
                 .add(new DropdownSetting("Combat Mode", List.of("Adaptive", "Fast Hit-And-Move", "Confirmed Kill"),
@@ -106,7 +108,24 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(slider("Navigation Retries", 1, 10, AetherConfig.DWARVEN_NAV_RETRIES))
                 .add(slider("Longest Single Walk Blocks", 8, 48, AetherConfig.DWARVEN_LEG_LENGTH))
                 .add(slider("Failed Teleport Blacklist Seconds", 10, 3600, AetherConfig.DWARVEN_ROUTE_BLACKLIST_SECONDS))
-                .add(slider("Forge Warp Confirmation Timeout Ms", 1000, 20000, AetherConfig.DWARVEN_WARP_TIMEOUT_MS));
+                .add(slider("Forge Warp Confirmation Timeout Ms", 1000, 20000, AetherConfig.DWARVEN_WARP_TIMEOUT_MS))
+                .add(toggle("Dynamic Route Reattachment", AetherConfig.DWARVEN_ROUTE_REATTACH))
+                .add(toggle("Avoid Recently Failed Waypoints", AetherConfig.DWARVEN_AVOID_FAILED_WAYPOINTS))
+                .add(toggle("Allow Walking Fallback", AetherConfig.DWARVEN_WALK_FALLBACK))
+                .add(toggle("Predictive Stuck Detection", AetherConfig.DWARVEN_PREDICTIVE_STUCK))
+                .add(slider("Route Reliability Weight", 0f, 5f, AetherConfig.DWARVEN_ROUTE_RELIABILITY, 1));
+
+        SettingGroup goblins = SettingGroup.alwaysOn("Goblin Slayer", "Goblin Burrows hunting and the weapon it uses")
+                .add(toggle("Enable Goblin Slayer", AetherConfig.DWARVEN_GOBLIN_SLAYER))
+                .add(toggle("Automatic Weapon Selection", AetherConfig.DWARVEN_AUTO_WEAPON))
+                .add(new InfoSetting("Weapon Priority", () -> "Hyperion (Wither Impact) > Terminator > best sword or shortbow by damage > mining tool").multiline())
+                .add(toggle("Hyperion Enabled", AetherConfig.DWARVEN_HYPERION))
+                .add(toggle("Terminator Enabled", AetherConfig.DWARVEN_TERMINATOR))
+                .add(toggle("Other Combat Weapons Enabled", AetherConfig.DWARVEN_OTHER_WEAPONS))
+                .add(toggle("Mining Tool Fallback", AetherConfig.DWARVEN_TOOL_FALLBACK))
+                .add(slider("Target Search Radius", 12, 64, AetherConfig.DWARVEN_TARGET_RADIUS))
+                .add(toggle("Prefer Enemy Clusters", AetherConfig.DWARVEN_PREFER_CLUSTERS))
+                .add(slider("Maximum Target Engagement Seconds", 3, 60, AetherConfig.DWARVEN_MAX_ENGAGE_SECONDS));
 
         SettingGroup camera = SettingGroup.alwaysOn("Camera", "Smooth camera movement while mining")
                 .add(new DropdownSetting("Rotation Mode", List.of("Smooth", "Adaptive", "Precision"),
@@ -131,7 +150,7 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(toggle("HUD Debug Rows", AetherConfig.DWARVEN_HUD_DEBUG));
 
         return MainGUIRegistry.subTab("Dwarven Commissions", "Dwarven Mines commission macro",
-                List.of(general, commissions, discovery, mining, combat, navigation, camera, recovery));
+                List.of(general, commissions, discovery, mining, combat, goblins, navigation, camera, recovery));
     }
 
     private static void save(Runnable change) {
