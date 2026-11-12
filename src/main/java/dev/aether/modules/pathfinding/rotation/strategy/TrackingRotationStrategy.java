@@ -30,6 +30,14 @@ public final class TrackingRotationStrategy implements IRotationStrategy {
         return step(player.getYRot(), player.getXRot(), targetYaw, targetPitch, degreesPerSecond, seconds);
     }
 
+    // the same step, from an angle the caller keeps (the exact one, before mouse-step rounding)
+    public Rotation onRotateFrom(float yaw, float pitch, float targetYaw, float targetPitch) {
+        long now = System.nanoTime();
+        double seconds = Math.clamp((now - lastUpdate) / 1.0e9, 0.0, 0.1);
+        lastUpdate = now;
+        return step(yaw, pitch, targetYaw, targetPitch, degreesPerSecond, seconds);
+    }
+
     public static Rotation step(float yaw, float pitch, float targetYaw, float targetPitch,
                                 float degreesPerSecond, double seconds) {
         float yawDelta = AngleUtils.getRotationDelta(yaw, targetYaw);

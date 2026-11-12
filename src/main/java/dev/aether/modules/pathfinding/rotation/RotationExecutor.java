@@ -21,6 +21,7 @@ public final class RotationExecutor {
     private static float             lastAppliedYaw;
     private static float             lastAppliedPitch;
     private static boolean           hasLastApplied = false;
+    private static final RotationCarry carry = new RotationCarry();
 
     private RotationExecutor() {}
 
@@ -35,6 +36,7 @@ public final class RotationExecutor {
         double f    = sens * 0.6 + 0.2;
         cachedGcd   = f * f * f * 1.2;
         strategy.onStart();
+        carry.reset();
         hasLastApplied = false;
         isRotating  = true;
     }
@@ -73,10 +75,15 @@ public final class RotationExecutor {
         }
 
         if (currStrat != null) {
-            Rotation result = currStrat.onRotate(player, targetYaw, targetPitch);
+            double gcd = Double.isNaN(cachedGcd) ? computeGcd() : cachedGcd;
+            // the tracker walks from the exact angle it reached last frame, not the rounded one the player shows
+            Rotation result = currStrat instanceof TrackingRotationStrategy tracking
+                    ? tracking.onRotateFrom(carry.startYaw(player.getYRot(), gcd), carry.startPitch(player.getXRot(), gcd), targetYaw, targetPitch)
+                    : currStrat.onRotate(player, targetYaw, targetPitch);
             if (result == null) {
                 stopRotating();
             } else {
+                carry.hold(result.yaw, Math.max(-90f, Math.min(90f, result.pitch)));
                 float newYaw   = applyGCD(result.yaw,   player.getYRot());
                 float newPitch = Math.max(-90f, Math.min(90f,
                         applyGCD(result.pitch, player.getXRot(), -90f, 90f)));
