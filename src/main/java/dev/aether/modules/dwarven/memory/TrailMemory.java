@@ -56,6 +56,11 @@ public final class TrailMemory {
         public double deviationSum;
         public long millisSum;
         public long lastSuccessAt;
+        // a teleport proven broken (no room on its landing, a start nobody can stand on) is left out of planning
+        // until invalidUntil; each repeat strike keeps it out longer
+        public int strikes;
+        public long invalidUntil;
+        public String cause = "";
 
         public double failureRate() {
             int n = successes + failures;
@@ -103,6 +108,8 @@ public final class TrailMemory {
             st.deviationSum += deviation;
             st.millisSum += millis;
             st.lastSuccessAt = clock.getAsLong();
+            st.strikes = 0;
+            st.invalidUntil = 0;
         } else {
             st.failures++;
         }
@@ -111,6 +118,51 @@ public final class TrailMemory {
 
     public HopStats hopStats(Hop hop) {
         return hopStats.get(hop);
+    }
+
+    // how long each strike keeps a broken teleport out: mithril regrows and mined blocks come back, so a blocked
+    // landing gets rechecked, but one that keeps failing stops being tried for days
+    private static final long[] INVALID_FOR_MS = {30 * 60_000L, 3 * 3_600_000L, 24 * 3_600_000L, 7 * 24 * 3_600_000L};
+
+    public long invalidate(Hop hop, String cause) {
+        HopStats st = hopStats.computeIfAbsent(hop, h -> new HopStats());
+        st.strikes++;
+        st.failures++;
+        st.cause = cause;
+        st.invalidUntil = clock.getAsLong() + INVALID_FOR_MS[Math.min(st.strikes, INVALID_FOR_MS.length) - 1];
+        dirty = true;
+        return st.invalidUntil;
+    }
+
+    public boolean valid(Hop hop) {
+        HopStats st = hopStats.get(hop);
+        return st == null || st.invalidUntil <= clock.getAsLong();
+    }
+
+    // the world was checked again and the teleport looks usable; it comes back with its strikes kept
+    public void revalidate(Hop hop) {
+        HopStats st = hopStats.get(hop);
+        if (st != null && st.invalidUntil > clock.getAsLong()) {
+            st.invalidUntil = 0;
+            dirty = true;
+        }
+    }
+
+    public List<Hop> invalidHops() {
+        List<Hop> out = new ArrayList<>();
+        long now = clock.getAsLong();
+        hopStats.forEach((h, st) -> {
+            if (st.invalidUntil > now) out.add(h);
+        });
+        return out;
+    }
+
+    // teleports currently left out or failing at least half the time
+    public int unreliableHopCount() {
+        long now = clock.getAsLong();
+        int n = 0;
+        for (HopStats st : hopStats.values()) if (st.invalidUntil > now || st.successes + st.failures >= 2 && st.failureRate() >= 0.5) n++;
+        return n;
     }
 
     // a walk stalled on its way to this point; routes through it cost more until that fades or a walk gets past it
@@ -373,7 +425,7 @@ public final class TrailMemory {
             if (top[0] > cost[at]) continue;
             for (int next : links.get(at)) {
                 Hop hop = hops.get(edge(at, next));
-                if (hop != null && (!hopKinds.contains(hop.kind()) || bannedHops.contains(hop))) continue;
+                if (hop != null && (!hopKinds.contains(hop.kind()) || bannedHops.contains(hop) || !valid(hop))) continue;
                 double step = hop != null ? hopCost + hopPenalty.applyAsDouble(hop) : Math.sqrt(crumbs.get(at).distSqr(crumbs.get(next)));
                 double c = cost[at] + step + (stuckAt.isEmpty() ? 0 : stuckPenalty(crumbs.get(next)));
                 if (c < cost[next]) {
@@ -493,6 +545,11 @@ public final class TrailMemory {
                 st.deviationSum = a.get(9).getAsDouble();
                 st.millisSum = a.get(10).getAsLong();
                 st.lastSuccessAt = a.get(11).getAsLong();
+                if (a.size() > 14) {
+                    st.strikes = a.get(12).getAsInt();
+                    st.invalidUntil = a.get(13).getAsLong();
+                    st.cause = a.get(14).getAsString();
+                }
                 hopStats.put(hopFrom(a), st);
             }
         }
@@ -520,6 +577,9 @@ public final class TrailMemory {
             a.add(st.deviationSum);
             a.add(st.millisSum);
             a.add(st.lastSuccessAt);
+            a.add(st.strikes);
+            a.add(st.invalidUntil);
+            a.add(st.cause);
         }
         return a;
     }

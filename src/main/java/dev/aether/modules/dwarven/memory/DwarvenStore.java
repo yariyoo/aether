@@ -20,6 +20,7 @@ public final class DwarvenStore {
     public static final AreaMemory AREAS = new AreaMemory();
     public static final TrailMemory TRAILS = new TrailMemory();
     public static final SpawnMemory SPAWNS = new SpawnMemory();
+    public static final RouteHistory ROUTES = new RouteHistory();
     public static final dev.aether.modules.dwarven.claim.Emissaries EMISSARIES = new dev.aether.modules.dwarven.claim.Emissaries();
     public static final WorkStats WORK = new WorkStats(75.0);
     private static boolean loaded;
@@ -42,9 +43,11 @@ public final class DwarvenStore {
         if ((o = read("trails.json")) != null) TRAILS.load(o);
         if ((o = read("work.json")) != null) WORK.load(o);
         if ((o = read("spawns.json")) != null) SPAWNS.load(o);
+        if ((o = read("routes.json")) != null) ROUTES.load(o);
         if ((o = read("emissaries.json")) != null) EMISSARIES.load(o);
         seed();
-        DwarvenLog.log("memory loaded: " + SPOTS.all().size() + " spots, " + TRAILS.size() + " trail points");
+        DwarvenLog.log("memory loaded: " + SPOTS.all().size() + " spots, " + TRAILS.size() + " trail points, " + ROUTES.count()
+                + " learned journeys (" + ROUTES.verifiedCount() + " verified), " + TRAILS.invalidHops().size() + " teleports left out as broken");
     }
 
     // zone outlines and fight spots from a recorded commission run, so a fresh install knows the map
@@ -103,6 +106,7 @@ public final class DwarvenStore {
         if (AREAS.dirty()) write("areas.json", AREAS.toJson());
         if (TRAILS.dirty()) write("trails.json", TRAILS.toJson());
         if (SPAWNS.dirty()) write("spawns.json", SPAWNS.toJson());
+        if (ROUTES.dirty()) write("routes.json", ROUTES.toJson());
         if (EMISSARIES.dirty()) write("emissaries.json", EMISSARIES.toJson());
         if (workDirty) {
             write("work.json", WORK.toJson());
