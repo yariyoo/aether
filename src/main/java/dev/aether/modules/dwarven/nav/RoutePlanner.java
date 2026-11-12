@@ -97,6 +97,16 @@ public final class RoutePlanner {
         return fromForgeSeconds + 5 < hereSeconds ? Warp.QUICKER : Warp.NOT_QUICKER;
     }
 
+    // like forgeDecision, but when neither start has a complete route the two partial routes are compared by their
+    // estimated time instead of warping just because the one from here is partial
+    public static Warp forgeDecision(boolean enabled, BlockPos forge, BlockPos feet, double atForge, double hereSeconds,
+                                     double fromForgeSeconds, boolean failedFromForge, boolean failedFromHere, boolean routeHere,
+                                     boolean routeFromForge) {
+        Warp w = forgeDecision(enabled, forge, feet, atForge, hereSeconds, fromForgeSeconds, failedFromForge, failedFromHere, routeHere);
+        if (w != Warp.NO_ROUTE_HERE || routeFromForge) return w;
+        return fromForgeSeconds + 5 < hereSeconds ? Warp.QUICKER : Warp.NOT_QUICKER;
+    }
+
     public static boolean warps(Warp w) {
         return w == Warp.AFTER_FAILURE_HERE || w == Warp.NO_ROUTE_HERE || w == Warp.QUICKER;
     }
@@ -107,6 +117,19 @@ public final class RoutePlanner {
                                                 double etherLegSeconds) {
         if (distance < minDistance) return false;
         return etherLegSeconds + 0.5 < distance / walkSpeed + pathStartSeconds;
+    }
+
+    // the expected time of handing a leg to the etherwarp pathfinder, failures included: a failed one costs its own
+    // time and then the walk anyway. successRate comes from what such legs have done before
+    public static double etherwarpLegSeconds(double successRate, double successSeconds, double failureSeconds, double walkSeconds) {
+        return successRate * successSeconds + (1 - successRate) * (failureSeconds + walkSeconds);
+    }
+
+    public static boolean etherwarpLegWorthIt(double distance, double minDistance, double walkSpeed, double pathStartSeconds,
+                                              double successRate, double successSeconds, double failureSeconds) {
+        if (distance < minDistance) return false;
+        double walk = distance / walkSpeed + pathStartSeconds;
+        return etherwarpLegSeconds(successRate, successSeconds, failureSeconds, walk) + 0.5 < walk;
     }
 
     // longest single walk a merged leg may cover; inside one pathfinder search's comfortable range
