@@ -24,6 +24,11 @@ public final class TrailMemory {
 
     // a teleport between two crumbs costs about as much time as walking this far
     private static final double HOP_COST = 3.0;
+    private static final double ATTACH_WEIGHT = 1.5;
+    private static final double ATTACH_CLIMB_WEIGHT = 3.0;
+    // closer than this the first leg goes straight on along the route instead of stopping on the join point
+    private static final double ATTACH_SKIP = 4.0;
+    private static final int MAX_STEPS = 8;
 
     public enum HopKind { AOTV, ETHERWARP }
 
@@ -150,42 +155,109 @@ public final class TrailMemory {
     // bannedHops are teleports that failed recently and must not be planned again yet
     public List<Waypoint> waypoints(BlockPos from, BlockPos to, double joinWithin, double stride, Set<HopKind> hopKinds,
                                     Set<Hop> bannedHops) {
-        int start = nearest(from, joinWithin);
-        int goal = nearest(to, joinWithin);
-        if (start < 0 || goal < 0 || start == goal) return List.of();
-        int[] prev = search(start, hopKinds, bannedHops);
-        if (prev[goal] < 0) return List.of();
-        return thin(pathTo(prev, goal), stride);
+        return routeFrom(from, to, joinWithin, joinWithin, stride, hopKinds, bannedHops, Set.of(), false).legs();
     }
 
     // when known ground doesn't reach the goal, go as far toward it as it does; empty when that's no closer than here
     public List<Waypoint> waypointsToward(BlockPos from, BlockPos to, double joinWithin, double stride, Set<HopKind> hopKinds,
                                           Set<Hop> bannedHops) {
-        int start = nearest(from, joinWithin);
-        if (start < 0) return List.of();
-        int[] prev = search(start, hopKinds, bannedHops);
-        int best = start;
-        double bestDistance = crumbs.get(start).distSqr(to);
-        for (int i = 0; i < crumbs.size(); i++) {
-            if (prev[i] < 0) continue;
-            double d = crumbs.get(i).distSqr(to);
-            if (d < bestDistance) {
-                bestDistance = d;
-                best = i;
-            }
-        }
-        if (best == start || crumbs.get(best).distSqr(to) >= from.distSqr(to) - 16) return List.of();
-        return thin(pathTo(prev, best), stride);
+        return routeFrom(from, to, joinWithin, joinWithin, stride, hopKinds, bannedHops, Set.of(), true).legs();
     }
 
-    private int[] search(int start, Set<HopKind> hopKinds, Set<Hop> bannedHops) {
+    // attach is the crumb the route joins known ground at; complete is false when it only gets partway
+    public record Route(List<Waypoint> legs, BlockPos attach, double attachDistance, boolean complete) {
+        static final Route NONE = new Route(List.of(), null, 0, false);
+
+        public boolean isEmpty() {
+            return legs.isEmpty();
+        }
+    }
+
+    // any crumb within attachWithin can start the route, not just the nearest, so a dead-end trail next to us can't hide
+    // the one that leads somewhere; partial goes as far toward the goal as known ground reaches
+    public Route routeFrom(BlockPos from, BlockPos to, double attachWithin, double goalJoin, double stride, Set<HopKind> hopKinds,
+                           Set<Hop> bannedHops, Set<BlockPos> unreachable, boolean partial) {
+        Map<Integer, Double> sources = new HashMap<>();
+        for (int i : within(from, attachWithin)) {
+            if (!unreachable.contains(crumbs.get(i))) sources.put(i, attachCost(from, crumbs.get(i)));
+        }
+        if (sources.isEmpty()) return Route.NONE;
         double[] cost = new double[crumbs.size()];
+        int[] prev = search(sources, cost, hopKinds, bannedHops);
+        int end = -1;
+        if (!partial) {
+            end = nearest(to, goalJoin);
+            if (end < 0 || cost[end] == Double.MAX_VALUE) return Route.NONE;
+        } else {
+            double bestDistance = from.distSqr(to) - 16;
+            for (int i = 0; i < crumbs.size(); i++) {
+                if (cost[i] == Double.MAX_VALUE) continue;
+                double d = crumbs.get(i).distSqr(to);
+                if (d < bestDistance) {
+                    bestDistance = d;
+                    end = i;
+                }
+            }
+            if (end < 0) return Route.NONE;
+        }
+        List<Integer> path = pathTo(prev, end);
+        BlockPos attach = crumbs.get(path.get(0));
+        double attachDistance = Math.sqrt(attach.distSqr(from));
+        if (path.size() == 1 && sources.containsKey(end) && !partial) {
+            return new Route(attachDistance > ATTACH_SKIP ? List.of(new Waypoint(attach, null)) : List.of(), attach, attachDistance, true);
+        }
+        List<Waypoint> legs = thin(path, stride);
+        // a far join point is walked to on its own, so a failed walk there shows exactly which connection was unreachable
+        if (attachDistance > ATTACH_SKIP && (legs.isEmpty() || !legs.get(0).pos().equals(attach))) legs.add(0, new Waypoint(attach, null));
+        if (legs.isEmpty()) return Route.NONE;
+        return new Route(legs, attach, attachDistance, !partial);
+    }
+
+    // a crumb above or below us is often a different floor, so height counts for more than flat distance
+    private static double attachCost(BlockPos from, BlockPos crumb) {
+        double flat = Math.hypot(crumb.getX() - from.getX(), crumb.getZ() - from.getZ());
+        return ATTACH_WEIGHT * flat + ATTACH_CLIMB_WEIGHT * Math.abs(crumb.getY() - from.getY());
+    }
+
+    private List<Integer> within(BlockPos pos, double radius) {
+        List<Integer> out = new ArrayList<>();
+        double r2 = radius * radius;
+        int cx = pos.getX() >> 3, cz = pos.getZ() >> 3;
+        int span = (int) Math.ceil(radius / 8.0);
+        for (int dx = -span; dx <= span; dx++) for (int dz = -span; dz <= span; dz++) {
+            List<Integer> in = grid.get(BlockPos.asLong(cx + dx, 0, cz + dz));
+            if (in == null) continue;
+            for (int i : in) if (crumbs.get(i).distSqr(pos) <= r2) out.add(i);
+        }
+        return out;
+    }
+
+    // known ground within one bounded walk that is clearly closer to the goal, best first, for crossing a gap in steps
+    public List<BlockPos> stepsToward(BlockPos from, BlockPos to, double reach, double minGain, Set<BlockPos> avoid) {
+        double here = Math.sqrt(from.distSqr(to));
+        List<BlockPos> out = new ArrayList<>();
+        for (int i : within(from, reach)) {
+            BlockPos c = crumbs.get(i);
+            if (avoid.contains(c) || Math.sqrt(c.distSqr(to)) > here - minGain) continue;
+            out.add(c);
+        }
+        out.sort(java.util.Comparator.comparingDouble(c -> Math.sqrt(c.distSqr(to)) + 0.5 * attachCost(from, c)));
+        return out.size() > MAX_STEPS ? new ArrayList<>(out.subList(0, MAX_STEPS)) : out;
+    }
+
+    public int crumbsWithin(BlockPos pos, double radius) {
+        return within(pos, radius).size();
+    }
+
+    private int[] search(Map<Integer, Double> sources, double[] cost, Set<HopKind> hopKinds, Set<Hop> bannedHops) {
         int[] prev = new int[crumbs.size()];
         Arrays.fill(cost, Double.MAX_VALUE);
         Arrays.fill(prev, -1);
         PriorityQueue<double[]> open = new PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
-        cost[start] = 0;
-        open.add(new double[]{0, start});
+        sources.forEach((i, c) -> {
+            cost[i] = c;
+            open.add(new double[]{c, i});
+        });
         while (!open.isEmpty()) {
             double[] top = open.poll();
             int at = (int) top[1];
