@@ -1,6 +1,7 @@
 package dev.aether.modules.dwarven.mine;
 
 import dev.aether.config.AetherConfig;
+import dev.aether.macro.MacroInput;
 import dev.aether.modules.dwarven.DwarvenLog;
 import dev.aether.modules.dwarven.camera.DwarvenCamera;
 import dev.aether.modules.dwarven.memory.DwarvenStore;
@@ -39,6 +40,12 @@ public final class DwarvenMiner {
 
     public enum Outcome { RUNNING, NO_ORE, TOOL_MISSING }
 
+    private static final long DIG_START_GRACE_MS = 600L;
+    private static final int STAND_FAIL_RADIUS = 2;
+    private static final int REGION_FAIL_RADIUS = 5;
+    private static final int REGION_FAILS = 2;
+    private boolean restartedDig;
+    private final Map<Long, Integer> regionFails = new HashMap<>();
     private static final String[] TOOL_WORDS = {"drill", "pickaxe", "gauntlet", "pickonimbus", "mithril pick"};
     private static final long AIM_LIMIT_MS = 1500L;
     private static final long REGEN_WAIT_MS = 6000L;
@@ -130,6 +137,7 @@ public final class DwarvenMiner {
         this.movedSinceDry = false;
         this.spot = null;
         skip.clear();
+        regionFails.clear();
         DwarvenLog.log("miner: start, ore " + wanted + (area == null ? ", anywhere" : ", in " + area) + ", prefer titanium " + preferTitanium);
         enter(Phase.PICK);
     }
@@ -273,7 +281,9 @@ public final class DwarvenMiner {
             return;
         }
         if (crosshairOn(client, target)) {
-            ClientUtils.setKeyMappingState(client.options.keyAttack, true);
+            // the macro input also tells the game to keep digging when the window doesn't have the mouse captured
+            MacroInput.setAttack(client.options.keyAttack, true);
+            restartedDig = false;
             enter(Phase.DIG);
             return;
         }
@@ -299,7 +309,7 @@ public final class DwarvenMiner {
         if (releaseTick) {
             // one tick off the button makes the game start a new dig on the block that replaced the old one
             releaseTick = false;
-            ClientUtils.setKeyMappingState(client.options.keyAttack, true);
+            MacroInput.setAttack(client.options.keyAttack, true);
             return;
         }
         OreKind nowKind = world.oreAt(target);
@@ -311,7 +321,7 @@ public final class DwarvenMiner {
                 targetKind = nowKind;
                 phaseSince = now;
                 releaseTick = true;
-                ClientUtils.setKeyMappingState(client.options.keyAttack, false);
+                MacroInput.setAttack(client.options.keyAttack, false);
                 return;
             }
             // keep the button down and swing straight to the next block
@@ -324,11 +334,23 @@ public final class DwarvenMiner {
             enter(Phase.AIM);
             return;
         }
+        boolean destroying = client.gameMode != null && client.gameMode.isDestroying();
+        if (!destroying && !restartedDig && now - phaseSince > DIG_START_GRACE_MS) {
+            // the button is down but the game never began breaking the block; press again instead of waiting out the timeout
+            restartedDig = true;
+            DwarvenLog.log("miner: " + digState(client) + " on " + targetKind + " at " + target.toShortString() + ", restarting the dig");
+            MacroInput.setAttack(client.options.keyAttack, false);
+            releaseTick = true;
+            phaseSince = now;
+            return;
+        }
         if (now - phaseSince > blockTimeoutMs()) {
+            String why = destroying ? "dig ran but the block didn't break" : digState(client);
             releaseAttack(client);
             skip.put(target, now + AetherConfig.DWARVEN_BLACKLIST_SECONDS.get() * 1000L);
             timeoutsInARow++;
-            DwarvenLog.log("miner: " + targetKind + " at " + target.toShortString() + " didn't break in " + (now - phaseSince) + "ms, skipping it (" + timeoutsInARow + " in a row)");
+            DwarvenLog.log("miner: " + targetKind + " at " + target.toShortString() + " didn't break in " + (now - phaseSince) + "ms (" + why
+                    + "), skipping it (" + timeoutsInARow + " in a row)");
             if (timeoutsInARow >= 3 && AetherConfig.DWARVEN_REPOSITION.get()) {
                 timeoutsInARow = 0;
                 badStands.put(client.player.blockPosition(), now + AetherConfig.DWARVEN_BLACKLIST_SECONDS.get() * 1000L);
@@ -337,6 +359,19 @@ public final class DwarvenMiner {
                 enter(Phase.PICK);
             }
         }
+    }
+
+    // which part of the dig chain is missing, so a block that won't break says why
+    private String digState(Minecraft client) {
+        boolean held = client.options.keyAttack.isDown();
+        boolean grabbed = client.mouseHandler.isMouseGrabbed();
+        int tool = toolSlot(client);
+        boolean toolHeld = tool >= 0 && FailsafeManager.getCurrentSelectedSlot(client) == tool;
+        if (!toolHeld) return "mining tool not held";
+        if (!held) return "attack input not held";
+        if (!crosshairOn(client, target)) return "crosshair off the block";
+        return "mining never started (attack held, mouse " + (grabbed ? "captured" : "not captured")
+                + ", attack suppressed " + dev.aether.bootstrap.AetherBootstrapHooks.isAttackSuppressed() + ")";
     }
 
     private void recordBreak(long now) {
@@ -400,7 +435,9 @@ public final class DwarvenMiner {
                 SpotMemory.Spot known = AetherConfig.DWARVEN_VEIN_MEMORY.get() ? DwarvenStore.SPOTS.at(stand.feet()) : null;
                 // spots that paid off before get the benefit of the doubt, ones that didn't lose it
                 if (known != null) value *= Math.max(0.5, Math.min(2.0, known.rate(PRIOR_RATE) / PRIOR_RATE));
-                double score = value / (8.0 + Math.sqrt(stand.feet().distSqr(feet)));
+                // climbs and drops usually mean a detour, so height costs more than flat distance
+                double rise = Math.abs(stand.feet().getY() - feet.getY());
+                double score = value / (8.0 + Math.sqrt(stand.feet().distSqr(feet)) + rise * 2.0);
                 if (score > bestScore) {
                     bestScore = score;
                     best = stand;
@@ -450,6 +487,10 @@ public final class DwarvenMiner {
         return other == null && stand.distSqr(feet) <= 20 * 20 && DwarvenStore.AREAS.contains(area, feet);
     }
 
+    private void blockAround(BlockPos centre, int r, long until) {
+        for (BlockPos p : BlockPos.betweenClosed(centre.offset(-r, -r, -r), centre.offset(r, r, r))) badStands.put(p.immutable(), until);
+    }
+
     private void startWalk(Minecraft client, BlockPos goal, long now) {
         releaseAttack(client);
         RotationManager.cancelRotation();
@@ -482,7 +523,13 @@ public final class DwarvenMiner {
         if (walkResult.get() == 2 || stuck) {
             PathfindingManager.stop();
             long block = AetherConfig.DWARVEN_BLACKLIST_SECONDS.get() * 1000L;
-            badStands.put(walkGoal, now + block);
+            // the stands around one we couldn't reach are usually just as unreachable; drop the patch, not one block
+            blockAround(walkGoal, STAND_FAIL_RADIUS, now + block);
+            long region = BlockPos.asLong(walkGoal.getX() >> 3, walkGoal.getY() >> 3, walkGoal.getZ() >> 3);
+            if (regionFails.merge(region, 1, Integer::sum) >= REGION_FAILS) {
+                DwarvenLog.log("miner: stands around " + walkGoal.toShortString() + " failed repeatedly, leaving that part of the vein");
+                blockAround(walkGoal, REGION_FAIL_RADIUS, now + block);
+            }
             DwarvenStore.SPOTS.unreachable(walkGoal, now, 3, 600_000L);
             moveFailures++;
             DwarvenLog.log("miner: couldn't reach " + walkGoal.toShortString() + " (" + (stuck ? "stuck" : "no path") + "), try " + moveFailures);
@@ -543,7 +590,7 @@ public final class DwarvenMiner {
     }
 
     private static void releaseAttack(Minecraft client) {
-        if (client.options != null) ClientUtils.setKeyMappingState(client.options.keyAttack, false);
+        if (client.options != null) MacroInput.setAttack(client.options.keyAttack, false);
     }
 
     private void sneak(Minecraft client, boolean down) {
