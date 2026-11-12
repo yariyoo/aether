@@ -38,6 +38,8 @@ public class RotationManager {
     private static boolean steerMode = false;
     private static final CameraMotion steerMotion = new CameraMotion();
     private static long manualOverrideAt = 0L;
+    private static volatile long mouseMovedAt = 0L;
+    private static final long MOUSE_OVERRIDE_WINDOW_MS = 250L;
 
     public static boolean isRotating() {
         return isRotating;
@@ -91,6 +93,11 @@ public class RotationManager {
     // when the player last took the camera back from a steer by moving the mouse
     public static long lastManualOverrideAt() {
         return manualOverrideAt;
+    }
+
+    // set from the real mouse callback, so drift caused by another module turning the camera isn't taken for the player
+    public static void noteMouseMoved() {
+        mouseMovedAt = System.currentTimeMillis();
     }
 
     public static void initiateRotation(Minecraft mc, Vec3 targetPos, long minDuration) {
@@ -213,7 +220,7 @@ public class RotationManager {
 
         if (isRotating && startRot != null && targetRot != null) {
             if (hasExternalRotation(mc)) {
-                if (steerMode) manualOverrideAt = updateAt;
+                if (steerMode && updateAt - mouseMovedAt <= MOUSE_OVERRIDE_WINDOW_MS) manualOverrideAt = updateAt;
                 FailsafeManager.reportExternalRotation();
                 cancelRotation();
                 return;

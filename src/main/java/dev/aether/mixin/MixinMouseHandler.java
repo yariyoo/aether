@@ -67,5 +67,6 @@ public class MixinMouseHandler {
     @Inject(method = "onMove", at = @At("HEAD"))
     private void onMouseMove(long window, double mouseX, double mouseY, CallbackInfo ci) {
         AetherBootstrapHooks.onUserInput();
+        AetherBootstrapHooks.onMouseMoved();
     }
 }

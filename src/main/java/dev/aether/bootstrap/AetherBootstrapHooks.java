@@ -76,6 +76,9 @@ public final class AetherBootstrapHooks {
         default void onUserInput() {
         }
 
+        default void onMouseMoved() {
+        }
+
         default boolean shouldSuppressVanillaHud(Screen screen) {
             return false;
         }
@@ -287,6 +290,10 @@ public final class AetherBootstrapHooks {
 
     public static void onUserInput() {
         hooks.onUserInput();
+    }
+
+    public static void onMouseMoved() {
+        hooks.onMouseMoved();
     }
 
     public static boolean shouldSuppressVanillaHud(Screen screen) {

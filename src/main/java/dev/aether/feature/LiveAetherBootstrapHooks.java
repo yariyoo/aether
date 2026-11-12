@@ -184,6 +184,11 @@ public final class LiveAetherBootstrapHooks implements AetherBootstrapHooks.Feat
     }
 
     @Override
+    public void onMouseMoved() {
+        dev.aether.modules.rotation.RotationManager.noteMouseMoved();
+    }
+
+    @Override
     public boolean shouldSuppressVanillaHud(Screen screen) {
         return AetherBootstrapHooks.isBootstrapConfigScreen(screen) || screen instanceof MainGUI || screen instanceof HudEditScreen;
     }
