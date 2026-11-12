@@ -13,6 +13,7 @@ import dev.aether.modules.dwarven.world.OreWorld;
 import dev.aether.modules.dwarven.world.StandPlanner;
 import dev.aether.modules.dwarven.world.Vein;
 import dev.aether.modules.dwarven.world.VeinFinder;
+import dev.aether.modules.dwarven.world.WalkReach;
 import dev.aether.modules.failsafe.FailsafeManager;
 import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.modules.rotation.RotationManager;
@@ -58,6 +59,11 @@ public final class DwarvenMiner {
     private static final int MIN_REACHABLE_TO_MOVE = 2;
     private static final double TITANIUM_WEIGHT = 4.0;
     private static final double PRIOR_RATE = 60.0;
+    private static final int WALK_CHECK_RADIUS = 20;
+    private static final int WALK_CHECK_NODES = 6000;
+    private static final int WALK_CHECK_MIN = 20;
+    // with the pathfinder already moving, this long without getting closer means it won't get there
+    private static final long EARLY_STUCK_MS = 2500L;
 
     private final OreScanner scanner;
     private Phase phase = Phase.IDLE;
@@ -82,6 +88,8 @@ public final class DwarvenMiner {
     private BlockPos walkGoal;
     private AtomicInteger walkResult = new AtomicInteger();
     private double walkBest;
+    private boolean walkStarted;
+    private BlockPos walkFrom;
     private long walkProgressAt;
     private boolean abilityReady = true;
     private long abilityBlockedUntil;
@@ -307,9 +315,11 @@ public final class DwarvenMiner {
 
     private void dig(Minecraft client, OreWorld world, long now) {
         if (releaseTick) {
-            // one tick off the button makes the game start a new dig on the block that replaced the old one
+            // holding the key again on the same block only continues the old client-side dig and never tells the server;
+            // a real click is what starts a fresh one
             releaseTick = false;
             MacroInput.setAttack(client.options.keyAttack, true);
+            ClientUtils.clickKeyMapping(client.options.keyAttack);
             return;
         }
         OreKind nowKind = world.oreAt(target);
@@ -425,25 +435,58 @@ public final class DwarvenMiner {
         List<Vein> veins = new ArrayList<>(VeinFinder.find(ore, world, AetherConfig.DWARVEN_MIN_VEIN.get()));
         veins.sort((a, b) -> Double.compare(veinScore(b, feet), veinScore(a, feet)));
         double reach = client.player.blockInteractionRange();
+        boolean checkWalk = AetherConfig.DWARVEN_PREFER_REACHABLE.get();
+        Set<BlockPos> walkable = checkWalk ? WalkReach.from(world, feet, WALK_CHECK_RADIUS, WALK_CHECK_NODES) : Set.of();
+        // a tiny flood means we're on blocks the check can't model (a slab, a ledge edge); then it isn't trusted
+        boolean trustWalk = walkable.size() >= WALK_CHECK_MIN;
+        StandPlanner.Stand best = pickStand(world, veins, ore, reach, feet, trustWalk ? walkable : null);
+        if (best == null && trustWalk) {
+            // nothing passed the walk check; the old behaviour of trying the best stand anyway beats giving up
+            best = pickStand(world, veins, ore, reach, feet, null);
+            if (best != null) DwarvenLog.log("miner: no stand passed the walk check, trying " + best.feet().toShortString() + " anyway");
+        } else if (best != null && rejectedUnwalkable > 0) {
+            DwarvenLog.log("miner: skipped " + rejectedUnwalkable + " stands there's no walk to from here");
+        }
+        planMoveDone(client, world, now, feet, ore, veins, best);
+    }
+
+    private int rejectedUnwalkable;
+
+    private StandPlanner.Stand pickStand(OreWorld world, List<Vein> veins, List<BlockPos> ore, double reach, BlockPos feet, Set<BlockPos> walkable) {
+        rejectedUnwalkable = 0;
         StandPlanner.Stand best = null;
         double bestScore = 0;
         for (int i = 0; i < Math.min(VEINS_PLANNED, veins.size()); i++) {
             for (StandPlanner.Stand stand : StandPlanner.plan(world, veins.get(i), ore, reach, badStands.keySet())) {
                 if (stand.reachable().size() < MIN_REACHABLE_TO_MOVE) break;
-                if (area != null && !inArea(stand.feet(), feet)) continue;
+                // a stand known to sit in another zone wouldn't count for this commission, wherever its ore is
+                if (area != null && (!inArea(stand.feet(), feet) || !DwarvenStore.AREAS.allows(area, stand.feet()))) continue;
+                boolean insideCheck = Math.abs(stand.feet().getX() - feet.getX()) < WALK_CHECK_RADIUS - 1
+                        && Math.abs(stand.feet().getZ() - feet.getZ()) < WALK_CHECK_RADIUS - 1;
+                if (walkable != null && insideCheck && !walkable.contains(stand.feet())) {
+                    rejectedUnwalkable++;
+                    continue;
+                }
                 double value = stand.reachable().size() + (preferTitanium ? TITANIUM_WEIGHT * stand.titanium() : 0);
                 SpotMemory.Spot known = AetherConfig.DWARVEN_VEIN_MEMORY.get() ? DwarvenStore.SPOTS.at(stand.feet()) : null;
                 // spots that paid off before get the benefit of the doubt, ones that didn't lose it
                 if (known != null) value *= Math.max(0.5, Math.min(2.0, known.rate(PRIOR_RATE) / PRIOR_RATE));
                 // climbs and drops usually mean a detour, so height costs more than flat distance
                 double rise = Math.abs(stand.feet().getY() - feet.getY());
-                double score = value / (8.0 + Math.sqrt(stand.feet().distSqr(feet)) + rise * 2.0);
+                // stands near ones that failed before are less likely to work; the weight sets how much that matters
+                int fails = regionFails.getOrDefault(BlockPos.asLong(stand.feet().getX() >> 3, stand.feet().getY() >> 3, stand.feet().getZ() >> 3), 0);
+                double reliability = 1.0 / (1.0 + AetherConfig.DWARVEN_SPOT_RELIABILITY.get() * fails);
+                double score = value * reliability / (8.0 + Math.sqrt(stand.feet().distSqr(feet)) + rise * 2.0);
                 if (score > bestScore) {
                     bestScore = score;
                     best = stand;
                 }
             }
         }
+        return best;
+    }
+
+    private void planMoveDone(Minecraft client, OreWorld world, long now, BlockPos feet, List<BlockPos> ore, List<Vein> veins, StandPlanner.Stand best) {
         if (best == null) {
             if (!movedSinceDry && spot != null && spot.blocks > 0) {
                 DwarvenLog.log("miner: no other spot reaches ore (" + ore.size() + " ore, " + veins.size() + " veins nearby), waiting for this one to come back");
@@ -498,6 +541,8 @@ public final class DwarvenMiner {
         walkGoal = goal;
         walkBest = Math.sqrt(goal.distSqr(client.player.blockPosition()));
         walkProgressAt = now;
+        walkStarted = false;
+        walkFrom = client.player.blockPosition();
         AtomicInteger result = new AtomicInteger();
         walkResult = result;
         PathfindingManager.startConfiguredWalk(client, goal.getX(), goal.getY(), goal.getZ(),
@@ -519,7 +564,14 @@ public final class DwarvenMiner {
             walkBest = left;
             walkProgressAt = now;
         }
-        boolean stuck = now - walkProgressAt > AetherConfig.DWARVEN_STUCK_SECONDS.get() * 1000L;
+        // until the first steps, the pathfinder may still be searching, which isn't being stuck
+        if (!walkStarted && walkFrom != null && Math.sqrt(walkFrom.distSqr(feet)) >= 1) {
+            walkStarted = true;
+            walkProgressAt = now;
+        }
+        long stuckMs = AetherConfig.DWARVEN_PREDICTIVE_STUCK.get() && walkStarted ? EARLY_STUCK_MS
+                : AetherConfig.DWARVEN_STUCK_SECONDS.get() * 1000L;
+        boolean stuck = now - walkProgressAt > stuckMs;
         if (walkResult.get() == 2 || stuck) {
             PathfindingManager.stop();
             long block = AetherConfig.DWARVEN_BLACKLIST_SECONDS.get() * 1000L;
