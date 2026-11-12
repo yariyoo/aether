@@ -841,5 +841,6 @@
   "text.aether.warp_to_forge_when_faster": "Warp To Forge When Faster",
   "text.aether.what_it_does_when_something_goes_wrong_and_what_it_shows": "What it does when something goes wrong, and what it shows",
   "text.aether.which_commissions_it_takes_and_how_it_chooses": "Which commissions it takes and how it chooses",
-  "key.aether.dwarven_commissions": "Toggle Dwarven Commissions"
+  "key.aether.dwarven_commissions": "Toggle Dwarven Commissions",
+  "text.aether.combat_commissions": "Combat Commissions"
 }

@@ -774,6 +774,7 @@
   "text.aether.angular_acceleration": "Angular Acceleration",
   "text.aether.angular_deceleration": "Angular Deceleration",
   "text.aether.area_mining_commissions": "Area Mining Commissions",
+  "text.aether.combat_commissions": "Combat Commissions",
   "text.aether.automatic_repositioning": "Automatic Repositioning",
   "text.aether.camera": "Camera",
   "text.aether.chunks_scanned_per_tick": "Chunks Scanned Per Tick",
