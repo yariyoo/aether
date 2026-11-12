@@ -33,7 +33,29 @@ public final class DwarvenStore {
         if ((o = read("areas.json")) != null) AREAS.load(o);
         if ((o = read("trails.json")) != null) TRAILS.load(o);
         if ((o = read("work.json")) != null) WORK.load(o);
+        seed();
         DwarvenLog.log("memory loaded: " + SPOTS.all().size() + " spots, " + TRAILS.size() + " trail points");
+    }
+
+    // zone outlines and fight spots from a recorded commission run, so a fresh install knows the map
+    private static void seed() {
+        try (var in = DwarvenStore.class.getResourceAsStream("/assets/aether/dwarven/seed.json")) {
+            if (in == null) return;
+            JsonObject root = JsonParser.parseReader(new java.io.InputStreamReader(in, StandardCharsets.UTF_8)).getAsJsonObject();
+            JsonObject areas = root.getAsJsonObject("areas");
+            int cells = 0;
+            for (String area : areas.keySet()) {
+                for (var el : areas.getAsJsonArray(area)) {
+                    var p = el.getAsJsonArray();
+                    AREAS.observe(area, new net.minecraft.core.BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt()));
+                    cells++;
+                }
+            }
+            if (root.has("hunts")) HuntPoints.load(root.getAsJsonObject("hunts"));
+            DwarvenLog.log("seeded " + areas.size() + " zones (" + cells + " cells) and fight spots from the bundled run");
+        } catch (Exception e) {
+            DwarvenLog.log("could not read the bundled seed: " + e);
+        }
     }
 
     public static void workChanged() {
