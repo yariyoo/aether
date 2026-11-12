@@ -51,6 +51,7 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(toggle("Mithril Commissions", AetherConfig.DWARVEN_MITHRIL))
                 .add(toggle("Titanium Commissions", AetherConfig.DWARVEN_TITANIUM))
                 .add(toggle("Area Mining Commissions", AetherConfig.DWARVEN_AREA_MINING))
+                .add(toggle("Combat Commissions", AetherConfig.DWARVEN_COMBAT))
                 .add(toggle("Favour Commissions That Overlap", AetherConfig.DWARVEN_OVERLAP))
                 .add(slider("Switch Only If This Much Faster", 0f, 0.9f, AetherConfig.DWARVEN_SWITCH_GAIN, 2).asPercentage());
 
