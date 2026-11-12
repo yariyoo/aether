@@ -9,6 +9,9 @@ import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.modules.rotation.RotationManager;
 import dev.aether.util.ClientUtils;
 import dev.aether.util.RotationUtils;
+import dev.aether.modules.dwarven.camera.CameraProfile;
+import dev.aether.modules.dwarven.diag.Diag;
+import dev.aether.modules.dwarven.world.LiveOreWorld;
 import dev.aether.util.TablistUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
@@ -45,14 +48,23 @@ public final class DwarvenFighter {
 
     // hypixel name tags read "[Lv23] Goblin 800/800❤", with font icons between the parts on 26.2
     private static final Pattern TAG = Pattern.compile("\\[Lv\\d+][^A-Za-z]*([A-Za-z' ]+?)\\s+([\\d,.]+)([kKmM]?)/");
-    private static final double HIT_REACH = 3.0;
     // wither impact hits around where it lands; looking straight down it lands where we stand
     private static final double WITHER_IMPACT_RADIUS = 6.0;
     private static final double CLUSTER_RADIUS = 6.0;
     private static final long CAST_GAP_MS = 350L;
-    private static final double RANGED_REACH = 24.0;
+    private static final float IMPACT_AIM_DEGREES = 3.0f;
+    // the teleport and the mana drop both show up within a few ticks of the click
+    private static final long CAST_VERIFY_MS = 700L;
+    private static final long COOLDOWN_SUSPEND_MS = 1000L;
+    // once mana runs out, melee for at least this long so the two modes don't flicker
+    private static final long MIN_SUSPEND_MS = 1500L;
     private static final long SHOT_GAP_MS = 300L;
     private static final float SHOT_AIM_DEGREES = 2.0f;
+    // vanilla arrow physics per tick; a shortbow shot leaves at about full bow speed
+    private static final double ARROW_SPEED = 3.0;
+    private static final double ARROW_GRAVITY = 0.05;
+    private static final long SHOT_VERIFY_MS = 400L;
+    private static final int NO_ARROW_LIMIT = 3;
     private static final long WEAPON_RECHECK_MS = 2000L;
     // a shot or cast is checked for damage this long after it, and a weapon that keeps doing none is dropped
     private static final long DAMAGE_CHECK_MS = 800L;
@@ -99,6 +111,28 @@ public final class DwarvenFighter {
     // weapons found not to work stay dropped for the session
     private static final Set<Weapons.Kind> disabled = EnumSet.noneOf(Weapons.Kind.class);
     private long lastCastAt;
+    private long abilitySuspendedUntil;
+    private boolean manaSuspended;
+    private long manaSuspendedAt;
+    private String abilityState = "ready";
+    private boolean castPending;
+    private Vec3 castFrom = Vec3.ZERO;
+    private int castMana = -1;
+    private boolean castMoves;
+    private int casts;
+    private int castFailures;
+    private boolean shotPending;
+    private int shots;
+    private Set<Integer> arrowsBefore = Set.of();
+    private int arrowlessShots;
+    private boolean arrowsSeen;
+    private boolean triedOtherInput;
+    private boolean autoLeft;
+    private String combatMode;
+    private String lastFailure;
+    private String scanNote = "-";
+    private long scanNoteAt;
+    private long offTargetSince;
     private Map<Integer, Double> damageSnapshot = Map.of();
     private long snapshotAt;
     private int noDamageStreak;
@@ -161,6 +195,19 @@ public final class DwarvenFighter {
         credit.reset();
         engagedMs = 0;
         engagedSince = System.currentTimeMillis();
+        combatMode = null;
+        lastFailure = null;
+        scanNote = "-";
+        manaSuspended = false;
+        abilitySuspendedUntil = 0;
+        abilityState = "ready";
+        castPending = false;
+        shotPending = false;
+        castFailures = 0;
+        arrowlessShots = 0;
+        casts = 0;
+        shots = 0;
+        offTargetSince = 0;
         outcome = Outcome.RUNNING;
         oldStyleSpots = 0;
         announcedMoveOn = false;
@@ -182,7 +229,7 @@ public final class DwarvenFighter {
             if (stack.isEmpty()) continue;
             var lore = stack.get(DataComponents.LORE);
             List<String> lines = lore == null ? List.of() : lore.lines().stream().map(c -> TablistUtils.stripColors(c.getString())).toList();
-            hotbar.add(new Weapons.Item(i, TablistUtils.stripColors(stack.getHoverName().getString()), lines));
+            hotbar.add(new Weapons.Item(i, skyblockId(stack), TablistUtils.stripColors(stack.getHoverName().getString()), lines));
         }
         String toolName = tool >= 0 ? client.player.getInventory().getItem(tool).getHoverName().getString() : null;
         Weapons.Prefs prefs = new Weapons.Prefs(autoWeapons && AetherConfig.DWARVEN_AUTO_WEAPON.get(), AetherConfig.DWARVEN_HYPERION.get(),
@@ -197,6 +244,55 @@ public final class DwarvenFighter {
         }
         weapon = next;
         return weapon;
+    }
+
+    // hypixel's own item id, which identifies a hyperion or terminator whatever it's been renamed or reforged to
+    private static String skyblockId(ItemStack stack) {
+        var custom = stack.get(DataComponents.CUSTOM_DATA);
+        if (custom == null) return "";
+        var tag = custom.copyTag();
+        return tag.getString("id").orElseGet(() -> tag.getCompound("ExtraAttributes").flatMap(a -> a.getString("id")).orElse(""));
+    }
+
+    // what the fighter is doing right now, for the diagnostic snapshot
+    public void describe(StringBuilder b, Minecraft client, long now) {
+        b.append(" fighter=").append(phase.name().toLowerCase(Locale.ROOT)).append(" combatMode=").append(combatMode);
+        if (weapon != null) b.append(" weapon=\"").append(weapon.kind() == null ? "none" : weapon.name()).append('"');
+        if (target != null) {
+            b.append(" target=").append(names.getOrDefault(target.getId(), "?")).append('@').append(target.blockPosition().toShortString());
+            b.append(String.format(" dtarget=%.1f", target.position().distanceTo(client.player.position())));
+        }
+        b.append(" ability=").append(abilityState);
+        int mana = Mana.current(now);
+        if (mana >= 0) b.append(" mana=").append(mana).append('/').append(Mana.max());
+        b.append(" scan=\"").append(scanNote).append('"');
+        if (lastFailure != null) b.append(" attackProblem=\"").append(lastFailure).append('"');
+        b.append(" kills=").append(attacks.kills()).append(" casts=").append(casts).append(" shots=").append(shots);
+    }
+
+    // label and value pairs for the hud's combat debug rows; each row is switched on by its own setting
+    public List<String[]> debugRows(Minecraft client, long now) {
+        List<String[]> rows = new ArrayList<>();
+        if (phase == Phase.IDLE) return rows;
+        if (AetherConfig.DWARVEN_DEBUG_WEAPON.get() && weapon != null)
+            rows.add(new String[]{"Weapon", weapon.kind() == null ? "none" : weapon.name()});
+        if (AetherConfig.DWARVEN_DEBUG_MODE.get()) rows.add(new String[]{"Mode", combatMode == null ? "-" : combatMode.toLowerCase(Locale.ROOT).replace('_', ' ')});
+        if (AetherConfig.DWARVEN_DEBUG_TARGET.get()) rows.add(new String[]{"Target", target == null ? scanNote : names.getOrDefault(target.getId(), "?")});
+        if (AetherConfig.DWARVEN_DEBUG_DISTANCE.get() && target != null)
+            rows.add(new String[]{"Distance", String.format("%.1f", target.position().distanceTo(client.player.position()))});
+        if (AetherConfig.DWARVEN_DEBUG_ABILITY.get() && weapon != null && weapon.impact()) rows.add(new String[]{"Ability", abilityState});
+        if (AetherConfig.DWARVEN_DEBUG_MANA.get() && weapon != null && weapon.impact()) {
+            int mana = Mana.current(now);
+            rows.add(new String[]{"Mana", (mana < 0 ? "?" : mana + "/" + Mana.max()) + (manaSuspended ? ", melee until it recovers" : "")});
+        }
+        if (AetherConfig.DWARVEN_DEBUG_INPUT.get()) {
+            String input = combatMode != null && (combatMode.equals("TERMINATOR") || combatMode.equals("SHORTBOW")) ? (fireWithLeft() ? "left click" : "right click")
+                    : combatMode != null && combatMode.equals("HYPERION_IMPACT") ? "right click" : "left click";
+            rows.add(new String[]{"Input", input + (dev.aether.bootstrap.AetherBootstrapHooks.isAttackSuppressed() ? " (suppressed)" : "")});
+        }
+        if (AetherConfig.DWARVEN_DEBUG_FAILURE.get() && lastFailure != null) rows.add(new String[]{"Attack problem", lastFailure});
+        if (AetherConfig.DWARVEN_DEBUG_KILLS.get()) rows.add(new String[]{"Confirmed kills", String.valueOf(attacks.kills())});
+        return rows;
     }
 
     public static void resetDisabledWeapons() {
@@ -235,6 +331,8 @@ public final class DwarvenFighter {
             DwarvenLog.log("combat: " + KillCredit.DROP_AFTER + " " + droppedType + " kills never moved the commission; leaving that mob alone");
         }
         checkDamage(client, now);
+        verifyCast(client, now);
+        verifyShot(client, now);
         Weapons.Choice w = chooseWeapon(client, now);
         if (w.kind() == null) {
             outcome = Outcome.NO_WEAPON;
@@ -281,32 +379,257 @@ public final class DwarvenFighter {
         Vec3 body = target.getBoundingBox().getCenter();
         double reach = client.player.getEyePosition().distanceTo(body);
         switch (w.kind()) {
-            case HYPERION -> {
-                if (inImpactRange(client) > 0) {
-                    stopWalking();
-                    cast(client, w, now);
-                } else {
-                    chase(client, now);
-                }
-            }
-            case TERMINATOR, SHORTBOW -> {
-                if (reach <= RANGED_REACH && visible(client, body)) {
-                    // no need to walk up to something we can shoot from here
-                    stopWalking();
-                    shoot(client, w, body, now);
-                } else {
-                    chase(client, now);
-                }
-            }
-            default -> {
-                if (reach <= HIT_REACH && visible(client, body)) {
-                    stopWalking();
-                    hit(client, w.slot(), body, now);
-                } else {
-                    chase(client, now);
-                }
-            }
+            case HYPERION -> hyperion(client, w, body, reach, now);
+            case TERMINATOR, SHORTBOW -> ranged(client, w, body, reach, now);
+            default -> melee(client, w, body, reach, now, "MELEE");
         }
+    }
+
+    private void melee(Minecraft client, Weapons.Choice w, Vec3 body, double reach, long now, String mode) {
+        setMode(mode);
+        if (reach <= AetherConfig.DWARVEN_MELEE_RANGE.get() && visible(client, body)) {
+            stopWalking();
+            hit(client, w.slot(), body, now);
+        } else {
+            lastFailure = null;
+            chase(client, now);
+        }
+    }
+
+    // wither impact while it can fire; left clicks with the same blade while mana recovers; walking only when nothing
+    // is within one teleport
+    private void hyperion(Minecraft client, Weapons.Choice w, Vec3 body, double reach, long now) {
+        if (w.impact() && AetherConfig.DWARVEN_WITHER_IMPACT.get() && impactReady(w, now)) {
+            ImpactPlanner.Plan plan = planImpact(client);
+            if (plan != null) {
+                setMode("HYPERION_IMPACT");
+                stopWalking();
+                castAt(client, w, plan, now);
+                return;
+            }
+            setMode("HYPERION_APPROACH");
+            chase(client, now);
+            return;
+        }
+        if (!w.impact() || AetherConfig.DWARVEN_MELEE_FALLBACK.get()) {
+            melee(client, w, body, reach, now, w.impact() ? "HYPERION_MELEE" : "MELEE");
+            return;
+        }
+        setMode("HYPERION_WAITING_FOR_MANA");
+        stopWalking();
+    }
+
+    // whether wither impact may be used now; low mana is held until it reaches the recovery mark, so the two modes
+    // don't swap every tick
+    private boolean impactReady(Weapons.Choice w, long now) {
+        if (now < abilitySuspendedUntil) return false;
+        int mana = Mana.current(now);
+        int min = AetherConfig.DWARVEN_MIN_MANA.get() > 0 ? AetherConfig.DWARVEN_MIN_MANA.get() : w.manaCost();
+        if (manaSuspended) {
+            int recover = AetherConfig.DWARVEN_MANA_RECOVERY.get() > 0 ? AetherConfig.DWARVEN_MANA_RECOVERY.get() : min * 2;
+            if (Mana.max() > 0) recover = Math.min(recover, Mana.max());
+            boolean back = mana >= recover
+                    || mana < 0 && now - manaSuspendedAt > AetherConfig.DWARVEN_ABILITY_FAIL_COOLDOWN.get() * 1000L;
+            if (!AetherConfig.DWARVEN_REENABLE_ABILITY.get() || !back || now - manaSuspendedAt < MIN_SUSPEND_MS) return false;
+            manaSuspended = false;
+            abilityState = "ready";
+            DwarvenLog.log("[HYPERION] mana recovered" + (mana >= 0 ? " (" + mana + ")" : "") + "; resuming Wither Impact");
+        }
+        if (mana >= 0 && mana < min) {
+            suspendForMana(now, "mana " + mana + " is below " + min);
+            return false;
+        }
+        return true;
+    }
+
+    private void suspendForMana(long now, String why) {
+        if (manaSuspended) return;
+        manaSuspended = true;
+        manaSuspendedAt = now;
+        abilityState = "no mana";
+        DwarvenLog.log("[HYPERION] insufficient mana (" + why + "); "
+                + (AetherConfig.DWARVEN_MELEE_FALLBACK.get() ? "switching to left-click melee" : "waiting for it to recover"));
+    }
+
+    private ImpactPlanner.Plan planImpact(Minecraft client) {
+        List<ImpactPlanner.Target> near = new ArrayList<>();
+        for (LivingEntity m : eligibleNear(client, client.player.position(), ImpactPlanner.RANGE + WITHER_IMPACT_RADIUS)) {
+            near.add(new ImpactPlanner.Target(m.getId(), m.position()));
+        }
+        if (near.isEmpty()) return null;
+        LiveOreWorld world = new LiveOreWorld(client.level, client.player);
+        return ImpactPlanner.best(world, client.player.position(), client.player.getEyePosition(), client.player.getYRot(), near,
+                WITHER_IMPACT_RADIUS, AetherConfig.DWARVEN_PREFER_CLUSTERS.get());
+    }
+
+    private void castAt(Minecraft client, Weapons.Choice w, ImpactPlanner.Plan plan, long now) {
+        if (FailsafeManager.getCurrentSelectedSlot(client) != w.slot()) {
+            FailsafeManager.selectHotbarSlot(client, w.slot());
+            return;
+        }
+        RotationManager.steerAngles(client, plan.yaw(), plan.pitch(), DwarvenCamera.profile());
+        float yawOff = plan.moves() ? Math.abs(net.minecraft.util.Mth.wrapDegrees(plan.yaw() - client.player.getYRot())) : 0;
+        float pitchOff = Math.abs(plan.pitch() - client.player.getXRot());
+        if (yawOff > IMPACT_AIM_DEGREES || pitchOff > (plan.moves() ? IMPACT_AIM_DEGREES : 5.0f) || now - lastCastAt < CAST_GAP_MS) return;
+        FailsafeManager.addRotationGracePeriod(AetherConfig.FAILSAFE_ROTATION_WARP_GRACE_MS.get());
+        ClientUtils.performUseClickInstant();
+        lastCastAt = now;
+        castPending = true;
+        castFrom = client.player.position();
+        castMana = Mana.current(now);
+        castMoves = plan.moves();
+        casts++;
+        hits++;
+        for (int id : plan.hits()) attacks.recordHit(id, now);
+        List<LivingEntity> hitBy = new ArrayList<>();
+        for (int id : plan.hits()) if (client.level.getEntity(id) instanceof LivingEntity l) hitBy.add(l);
+        snapshot(client, hitBy, now);
+        Diag.event(Diag.COMBAT, String.format("[HYPERION] ability activation requested: %s, %d goblins in the blast", plan.moves()
+                ? "teleport to " + fmt(plan.landing()) : "in place", plan.hits().size()));
+        // the next target or cluster is picked straight away; deaths are confirmed on their own
+        target = null;
+        lastSwitchAt = now;
+    }
+
+    // after a cast: a teleport, a mana drop or a refusal from the server says what happened. silence repeated means
+    // the ability isn't working right now, which is not the same as having no mana
+    private void verifyCast(Minecraft client, long now) {
+        if (!castPending || now - lastCastAt < CAST_VERIFY_MS) return;
+        castPending = false;
+        int mana = Mana.current(now);
+        boolean moved = client.player.position().distanceTo(castFrom) >= 2.0;
+        boolean spent = castMana >= 0 && mana >= 0 && mana < castMana;
+        if (Mana.noManaAt() >= lastCastAt) {
+            castFailures = 0;
+            suspendForMana(now, "the server said not enough mana");
+            return;
+        }
+        if (Mana.cooldownAt() >= lastCastAt) {
+            abilitySuspendedUntil = now + COOLDOWN_SUSPEND_MS;
+            abilityState = "on cooldown";
+            Diag.event(Diag.COMBAT, "[HYPERION] ability on cooldown; swinging meanwhile");
+            return;
+        }
+        if (moved || spent || !castMoves && mana < 0) {
+            castFailures = 0;
+            abilityState = "ready";
+            Diag.event(Diag.COMBAT, "[HYPERION] ability executed (" + (moved ? "teleported" : spent ? "mana spent" : "no mana reading to check") + ")");
+            return;
+        }
+        castFailures++;
+        if (castFailures >= AetherConfig.DWARVEN_MAX_ABILITY_FAILURES.get()) {
+            castFailures = 0;
+            abilitySuspendedUntil = now + AetherConfig.DWARVEN_ABILITY_FAIL_COOLDOWN.get() * 1000L;
+            boolean held = weapon != null && FailsafeManager.getCurrentSelectedSlot(client) == weapon.slot();
+            abilityState = held ? "no response" : "item not held";
+            DwarvenLog.log("[HYPERION] " + AetherConfig.DWARVEN_MAX_ABILITY_FAILURES.get() + " casts showed no teleport and no mana spent ("
+                    + (held ? "no response from the server" : "the Hyperion wasn't in hand") + "); using melee for "
+                    + AetherConfig.DWARVEN_ABILITY_FAIL_COOLDOWN.get() + "s");
+        }
+    }
+
+    // a shot from where we stand when the goblin is visible and in range; otherwise walk until it is
+    private void ranged(Minecraft client, Weapons.Choice w, Vec3 body, double reach, long now) {
+        setMode(w.kind() == Weapons.Kind.TERMINATOR ? "TERMINATOR" : "SHORTBOW");
+        boolean clear = !AetherConfig.DWARVEN_RANGED_LOS.get() || visible(client, body);
+        if (reach <= AetherConfig.DWARVEN_RANGED_DISTANCE.get() && clear) {
+            stopWalking();
+            shoot(client, w, body, reach, now);
+        } else {
+            lastFailure = reach > AetherConfig.DWARVEN_RANGED_DISTANCE.get() ? "target out of range" : "no clear shot";
+            chase(client, now);
+        }
+    }
+
+    private void shoot(Minecraft client, Weapons.Choice w, Vec3 body, double distance, long now) {
+        if (FailsafeManager.getCurrentSelectedSlot(client) != w.slot()) {
+            FailsafeManager.selectHotbarSlot(client, w.slot());
+            return;
+        }
+        Vec3 aim = body;
+        double ticks = distance / ARROW_SPEED;
+        if (AetherConfig.DWARVEN_RANGED_PREDICTION.get()) {
+            // lead a moving goblin by where it will be when the arrow gets there
+            aim = aim.add((target.getX() - target.xo) * ticks, 0, (target.getZ() - target.zo) * ticks);
+        }
+        // arrows drop on the way; aim that much higher
+        aim = aim.add(0, 0.5 * ARROW_GRAVITY * ticks * ticks, 0);
+        CameraProfile profile = AetherConfig.DWARVEN_RANGED_SMOOTH.get() ? DwarvenCamera.profile() : DwarvenCamera.quick();
+        RotationManager.steer(client, aim, profile);
+        RotationUtils.Rotation want = RotationUtils.calculateLookAt(client.player.getEyePosition(), aim);
+        float yawOff = Math.abs(net.minecraft.util.Mth.wrapDegrees(want.yaw - client.player.getYRot()));
+        float pitchOff = Math.abs(want.pitch - client.player.getXRot());
+        if (yawOff > SHOT_AIM_DEGREES || pitchOff > SHOT_AIM_DEGREES || now - lastShotAt < SHOT_GAP_MS) return;
+        arrowsBefore = arrowsNear(client);
+        if (fireWithLeft()) ClientUtils.performAttackClick();
+        else ClientUtils.performUseClickInstant();
+        lastShotAt = now;
+        shotPending = true;
+        shots++;
+        hits++;
+        attacks.recordHit(target.getId(), now);
+        snapshot(client, List.of(target), now);
+        if (shots == 1 || shots % 25 == 0) Diag.event(Diag.COMBAT, "[TERMINATOR] firing interaction executed (" + (fireWithLeft() ? "left" : "right") + " click)");
+        if (attacks.moveOnAfterHit(mode(), AetherConfig.DWARVEN_COMBAT_LEARNING.get())) {
+            target = null;
+            lastSwitchAt = now;
+        }
+    }
+
+    private boolean fireWithLeft() {
+        int input = AetherConfig.DWARVEN_TERMINATOR_INPUT.get();
+        return input == 2 || input == 0 && autoLeft;
+    }
+
+    private Set<Integer> arrowsNear(Minecraft client) {
+        Set<Integer> out = new HashSet<>();
+        Vec3 eye = client.player.getEyePosition();
+        for (Entity e : client.level.entitiesForRendering()) {
+            boolean arrow = e.getType() == net.minecraft.world.entity.EntityType.ARROW || e.getType() == net.minecraft.world.entity.EntityType.SPECTRAL_ARROW;
+            if (arrow && e.position().distanceTo(eye) < 5) out.add(e.getId());
+        }
+        return out;
+    }
+
+    // a shot is only real if an arrow left the bow; with the automatic input, a click that never produces arrows is
+    // swapped for the other one before the weapon is given up on
+    private void verifyShot(Minecraft client, long now) {
+        if (!shotPending || now - lastShotAt < SHOT_VERIFY_MS) return;
+        shotPending = false;
+        boolean fired = false;
+        for (Integer id : arrowsNear(client)) if (!arrowsBefore.contains(id)) fired = true;
+        if (fired) {
+            arrowlessShots = 0;
+            arrowsSeen = true;
+            return;
+        }
+        if (++arrowlessShots < NO_ARROW_LIMIT) return;
+        arrowlessShots = 0;
+        if (AetherConfig.DWARVEN_TERMINATOR_INPUT.get() == 0 && !triedOtherInput) {
+            triedOtherInput = true;
+            autoLeft = !autoLeft;
+            DwarvenLog.log("[TERMINATOR] " + NO_ARROW_LIMIT + " shots produced no arrows; trying " + (autoLeft ? "left" : "right") + " click instead");
+            return;
+        }
+        if (weapon != null && weapon.kind() != null) {
+            disabled.add(weapon.kind());
+            weaponCheckedAt = 0;
+            DwarvenLog.log("[TERMINATOR] shots aren't producing arrows with " + (triedOtherInput ? "either click" : "this click") + "; falling back to the next weapon");
+        }
+    }
+
+    private void setMode(String mode) {
+        if (!mode.equals(combatMode)) {
+            Diag.event(Diag.COMBAT, "combat mode " + combatMode + " -> " + mode);
+            if (combatMode != null && (mode.startsWith("HYPERION") || combatMode.startsWith("HYPERION"))) {
+                DwarvenLog.log("combat: mode " + mode.toLowerCase(Locale.ROOT).replace('_', ' '));
+            }
+            combatMode = mode;
+        }
+    }
+
+    private static String fmt(Vec3 v) {
+        return String.format("%.1f, %.1f, %.1f", v.x, v.y, v.z);
     }
 
     private void stopWalking() {
@@ -316,8 +639,9 @@ public final class DwarvenFighter {
         }
     }
 
+    // an unknown or not yet refreshed zone isn't evidence either way, so nothing is learned from it
     private boolean inHuntArea() {
-        return area == null || zone.isEmpty() || zone.equalsIgnoreCase(area);
+        return area == null || zone.equalsIgnoreCase(area);
     }
 
     private List<LivingEntity> eligibleNear(Minecraft client, Vec3 centre, double radius) {
@@ -330,57 +654,6 @@ public final class DwarvenFighter {
             if (mob != null && mob.position().distanceTo(centre) <= radius) out.add(mob);
         }
         return out;
-    }
-
-    private int inImpactRange(Minecraft client) {
-        return eligibleNear(client, client.player.position(), WITHER_IMPACT_RADIUS - 0.5).size();
-    }
-
-    // looking straight down, wither impact lands where we stand and hits everything around us
-    private void cast(Minecraft client, Weapons.Choice w, long now) {
-        if (FailsafeManager.getCurrentSelectedSlot(client) != w.slot()) {
-            FailsafeManager.selectHotbarSlot(client, w.slot());
-            return;
-        }
-        RotationManager.steerAngles(client, client.player.getYRot(), 89.0f, DwarvenCamera.profile());
-        if (client.player.getXRot() < 85.0f || now - lastCastAt < CAST_GAP_MS) return;
-        int mana = Mana.current(now);
-        if (mana >= 0 && mana < w.manaCost()) {
-            weaponCheckedAt = 0;
-            return;
-        }
-        List<LivingEntity> hitBy = eligibleNear(client, client.player.position(), WITHER_IMPACT_RADIUS);
-        if (hitBy.isEmpty()) return;
-        FailsafeManager.addRotationGracePeriod(AetherConfig.FAILSAFE_ROTATION_WARP_GRACE_MS.get());
-        ClientUtils.performUseClickInstant();
-        lastCastAt = now;
-        hits++;
-        for (LivingEntity m : hitBy) attacks.recordHit(m.getId(), now);
-        snapshot(client, hitBy, now);
-        // the next target is picked straight away; deaths are confirmed on their own
-        target = null;
-        lastSwitchAt = now;
-    }
-
-    private void shoot(Minecraft client, Weapons.Choice w, Vec3 body, long now) {
-        if (FailsafeManager.getCurrentSelectedSlot(client) != w.slot()) {
-            FailsafeManager.selectHotbarSlot(client, w.slot());
-            return;
-        }
-        RotationManager.steer(client, body, DwarvenCamera.profile());
-        RotationUtils.Rotation want = RotationUtils.calculateLookAt(client.player.getEyePosition(), body);
-        float yawOff = Math.abs(net.minecraft.util.Mth.wrapDegrees(want.yaw - client.player.getYRot()));
-        float pitchOff = Math.abs(want.pitch - client.player.getXRot());
-        if (yawOff > SHOT_AIM_DEGREES || pitchOff > SHOT_AIM_DEGREES || now - lastShotAt < SHOT_GAP_MS) return;
-        ClientUtils.performUseClickInstant();
-        lastShotAt = now;
-        hits++;
-        attacks.recordHit(target.getId(), now);
-        snapshot(client, List.of(target), now);
-        if (attacks.moveOnAfterHit(mode(), AetherConfig.DWARVEN_COMBAT_LEARNING.get())) {
-            target = null;
-            lastSwitchAt = now;
-        }
     }
 
     private void snapshot(Minecraft client, List<LivingEntity> mobsHit, long now) {
@@ -445,7 +718,21 @@ public final class DwarvenFighter {
         RotationManager.steer(client, body, DwarvenCamera.profile());
         HitResult hit = client.hitResult;
         boolean onTarget = hit instanceof EntityHitResult e && e.getEntity() == target;
-        if (!onTarget || now - lastHitAt < HIT_GAP_MS) return;
+        if (!onTarget) {
+            if (offTargetSince == 0) offTargetSince = now;
+            if (now - offTargetSince > 800) {
+                lastFailure = hit instanceof EntityHitResult other ? "crosshair on another entity (" + other.getEntity().getName().getString() + ")"
+                        : "crosshair not on the goblin yet";
+            }
+            return;
+        }
+        offTargetSince = 0;
+        if (now - lastHitAt < HIT_GAP_MS) return;
+        if (dev.aether.bootstrap.AetherBootstrapHooks.isAttackSuppressed()) {
+            lastFailure = "attack input suppressed by another module";
+            return;
+        }
+        lastFailure = null;
         ClientUtils.performAttackClick();
         lastHitAt = now;
         hits++;
@@ -595,16 +882,31 @@ public final class DwarvenFighter {
         double bestCost = Double.MAX_VALUE;
         double bestPendingCost = Double.MAX_VALUE;
         long revisit = AetherConfig.DWARVEN_REVISIT_MS.get();
+        int tags = 0, eligible = 0, noBody = 0, far = 0, skipped = 0, pending = 0;
         for (Entity e : client.level.entitiesForRendering()) {
             if (!(e instanceof ArmorStand stand) || !stand.hasCustomName()) continue;
             Tag tag = parse(stand.getCustomName());
-            if (tag == null || tag.health <= 0 || !wanted(tag.name)) continue;
+            if (tag == null || tag.health <= 0) continue;
+            tags++;
+            if (!wanted(tag.name)) continue;
+            eligible++;
             LivingEntity mob = bodyUnder(client, stand);
-            if (mob == null || ignored.containsKey(mob.getId())) continue;
+            if (mob == null) {
+                noBody++;
+                continue;
+            }
+            if (ignored.containsKey(mob.getId())) {
+                skipped++;
+                continue;
+            }
             double distance = mob.position().distanceTo(eye);
-            if (distance > AetherConfig.DWARVEN_TARGET_RADIUS.get()) continue;
-            if (area != null && !DwarvenStore.AREAS.allows(area, mob.blockPosition())) continue;
+            if (distance > AetherConfig.DWARVEN_TARGET_RADIUS.get()) {
+                far++;
+                continue;
+            }
+            // a goblin in view is fought wherever the zone map puts it; kill credit sorts out ones that don't count
             names.put(mob.getId(), tag.name);
+            if (attacks.pending(mob.getId(), now, revisit)) pending++;
             double cost = targetCost(client, mob, distance, eye);
             if (attacks.pending(mob.getId(), now, revisit)) {
                 if (cost < bestPendingCost) {
@@ -616,7 +918,28 @@ public final class DwarvenFighter {
                 best = new Found(mob, tag.name);
             }
         }
-        return best != null ? best : bestPending;
+        Found chosen = best != null ? best : bestPending;
+        noteScan(now, chosen, tags, eligible, noBody, far, skipped, pending);
+        return chosen;
+    }
+
+    // why a scan came up empty, so "no goblins" is told apart from goblins that were all filtered out
+    private void noteScan(long now, Found chosen, int tags, int eligible, int noBody, int far, int skipped, int pending) {
+        String note;
+        if (chosen != null) note = "target " + chosen.name;
+        else if (tags == 0) note = "no mobs in view";
+        else if (eligible == 0) note = tags + " mobs in view, none of them " + mobs;
+        else note = String.format("%d eligible but none usable: %d without a body under the tag, %d past %d blocks, %d ignored for now",
+                eligible, noBody, far, AetherConfig.DWARVEN_TARGET_RADIUS.get(), skipped);
+        if (pending > 0 && chosen != null) note += " (" + pending + " hit and awaiting outcome)";
+        boolean changed = !note.equals(scanNote);
+        scanNote = note;
+        if (chosen == null && eligible > 0 && changed && now - scanNoteAt > 5000) {
+            scanNoteAt = now;
+            DwarvenLog.log("[GOBLIN] " + note);
+        } else if (changed) {
+            Diag.event(Diag.COMBAT, "[GOBLIN] " + note);
+        }
     }
 
     // what it takes to get this mob with the weapon in hand: a shot from here, a walk into a crowd, or a walk up to it
@@ -625,7 +948,7 @@ public final class DwarvenFighter {
         double cost = distance + Math.abs(mob.getY() - client.player.getY()) * 2.0;
         Weapons.Kind kind = weapon == null ? Weapons.Kind.TOOL : weapon.kind();
         if (kind == Weapons.Kind.TERMINATOR || kind == Weapons.Kind.SHORTBOW) {
-            boolean shootable = distance <= RANGED_REACH && visible(client, mob.getBoundingBox().getCenter());
+            boolean shootable = distance <= AetherConfig.DWARVEN_RANGED_DISTANCE.get() && visible(client, mob.getBoundingBox().getCenter());
             return shootable ? distance * 0.25 : cost + 20;
         }
         if (kind == Weapons.Kind.HYPERION && AetherConfig.DWARVEN_PREFER_CLUSTERS.get()) {

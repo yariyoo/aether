@@ -13,17 +13,40 @@ public final class Mana {
     private static volatile int current = -1;
     private static volatile int max = -1;
     private static volatile long seenAt;
+    private static volatile long noManaAt;
+    private static volatile long cooldownAt;
 
     private Mana() {
     }
 
     public static void onActionBar(Component component) {
         if (component == null) return;
-        int[] parsed = parse(component.getString());
+        String text = component.getString();
+        signal(text, System.currentTimeMillis());
+        int[] parsed = parse(text);
         if (parsed == null) return;
         current = parsed[0];
         max = parsed[1];
         seenAt = System.currentTimeMillis();
+    }
+
+    public static void onChat(String text) {
+        if (text != null) signal(text, System.currentTimeMillis());
+    }
+
+    // hypixel's own words when an ability can't fire, so a refusal is told apart from a click that did nothing
+    static void signal(String text, long now) {
+        String t = text.toLowerCase(java.util.Locale.ROOT);
+        if (t.contains("not enough mana") || t.contains("don't have enough mana") || t.contains("do not have enough mana")) noManaAt = now;
+        if (t.contains("ability is on cooldown") || t.contains("this ability is currently on cooldown")) cooldownAt = now;
+    }
+
+    public static long noManaAt() {
+        return noManaAt;
+    }
+
+    public static long cooldownAt() {
+        return cooldownAt;
     }
 
     public static int[] parse(String text) {

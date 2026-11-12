@@ -11,9 +11,22 @@ import java.util.regex.Pattern;
 public final class Weapons {
     public enum Kind { HYPERION, TERMINATOR, MELEE, SHORTBOW, TOOL }
 
-    public record Item(int slot, String name, List<String> lore) {}
+    // id is the skyblock item id from the item's custom data, empty when it has none
+    public record Item(int slot, String id, String name, List<String> lore) {
+        public Item(int slot, String name, List<String> lore) {
+            this(slot, "", name, lore);
+        }
+    }
 
-    public record Choice(int slot, Kind kind, String name, int manaCost, String reason) {}
+    // impact says the hyperion can cast wither impact; without it a hyperion is a very good sword
+    public record Choice(int slot, Kind kind, String name, int manaCost, boolean impact, String reason) {
+        public Choice(int slot, Kind kind, String name, int manaCost, String reason) {
+            this(slot, kind, name, manaCost, false, reason);
+        }
+    }
+
+    // the necron blades all carry wither impact once scrolled; hyperion is the one named in the priority
+    private static final Set<String> IMPACT_BLADES = Set.of("HYPERION", "VALKYRIE", "SCYLLA", "ASTRAEA");
 
     // which tiers may be used; auto off means the mining tool, as before
     public record Prefs(boolean auto, boolean hyperion, boolean terminator, boolean other, boolean tool) {}
@@ -75,19 +88,21 @@ public final class Weapons {
         List<String> why = new ArrayList<>();
         if (prefs.auto()) {
             if (prefs.hyperion() && !disabled.contains(Kind.HYPERION)) {
-                Item hype = find(hotbar, "hyperion");
+                Item hype = findBlade(hotbar);
                 if (hype == null) why.add("no Hyperion");
-                else if (!hasWitherImpact(hype.lore())) why.add("Hyperion has no Wither Impact");
-                else {
-                    int cost = witherImpactCost(hype.lore());
-                    if (mana >= 0 && mana < cost) why.add("not enough mana for Wither Impact (" + mana + "/" + cost + ")");
-                    else return new Choice(hype.slot(), Kind.HYPERION, hype.name(), cost, "Hyperion with Wither Impact");
+                else if (!hasWitherImpact(hype.lore())) {
+                    // still first by priority; it just fights with left clicks
+                    return new Choice(hype.slot(), Kind.HYPERION, hype.name(), 0, false, join("Hyperion without Wither Impact, used as a sword", why));
+                } else {
+                    // low mana doesn't hand over to the next weapon: the fighter swings the same blade until mana is back
+                    String note = mana >= 0 && mana < witherImpactCost(hype.lore()) ? " (low on mana, left-clicking until it recovers)" : "";
+                    return new Choice(hype.slot(), Kind.HYPERION, hype.name(), witherImpactCost(hype.lore()), true, "Hyperion with Wither Impact" + note);
                 }
             } else if (disabled.contains(Kind.HYPERION)) {
-                why.add("Wither Impact wasn't landing damage");
+                why.add("the Hyperion wasn't landing damage");
             }
             if (prefs.terminator() && !disabled.contains(Kind.TERMINATOR)) {
-                Item term = find(hotbar, "terminator");
+                Item term = findId(hotbar, "TERMINATOR", "terminator");
                 if (term == null) why.add("no Terminator");
                 else return new Choice(term.slot(), Kind.TERMINATOR, term.name(), 0, join("Terminator", why));
             } else if (disabled.contains(Kind.TERMINATOR)) {
@@ -125,8 +140,17 @@ public final class Weapons {
         return new Choice(-1, null, null, 0, "no usable combat equipment: " + String.join(", ", why));
     }
 
-    private static Item find(List<Item> hotbar, String word) {
-        for (Item it : hotbar) if (it.name().toLowerCase(Locale.ROOT).contains(word)) return it;
+    // the item id decides when there is one; the name is only a fallback for items without custom data
+    private static Item findId(List<Item> hotbar, String id, String word) {
+        for (Item it : hotbar) if (id.equalsIgnoreCase(it.id())) return it;
+        for (Item it : hotbar) if (it.id().isEmpty() && it.name().toLowerCase(Locale.ROOT).contains(word)) return it;
+        return null;
+    }
+
+    private static Item findBlade(List<Item> hotbar) {
+        Item hyperion = findId(hotbar, "HYPERION", "hyperion");
+        if (hyperion != null) return hyperion;
+        for (Item it : hotbar) if (IMPACT_BLADES.contains(it.id().toUpperCase(Locale.ROOT)) && hasWitherImpact(it.lore())) return it;
         return null;
     }
 

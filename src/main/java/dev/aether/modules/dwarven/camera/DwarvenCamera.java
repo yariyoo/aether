@@ -6,6 +6,13 @@ import dev.aether.config.AetherConfig;
 public final class DwarvenCamera {
     private DwarvenCamera() {}
 
+    // the same camera, turning about twice as fast, for when smooth ranged aiming is off
+    public static CameraProfile quick() {
+        CameraProfile p = profile();
+        return new CameraProfile(p.mode(), CameraProfile.Easing.LINEAR, p.minSpeed() * 2, p.maxSpeed() * 2, p.acceleration() * 2,
+                p.deceleration() * 2, p.smoothing() / 2, 0f, p.tolerance(), p.preventOvershoot());
+    }
+
     public static CameraProfile profile() {
         CameraProfile.Mode mode = CameraProfile.Mode.values()[AetherConfig.DWARVEN_CAM_MODE.get()];
         CameraProfile.Easing easing = switch (AetherConfig.DWARVEN_CAM_EASING.get()) {
