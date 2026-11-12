@@ -72,20 +72,20 @@ class EfficiencyTests {
     }
 
     @Test
-    void aHyperionWithoutTheAbilityFallsToTheTerminator() {
+    void aHyperionWithoutTheAbilityIsStillFirstAndFightsAsASword() {
         Weapons.Choice c = Weapons.choose(List.of(DRILL, terminator(2), hyperion(3, false)), 0, "drill", 800, ALL, Set.of());
-        assertEquals(Kind.TERMINATOR, c.kind());
-        assertTrue(c.reason().contains("no Wither Impact"));
+        assertEquals(Kind.HYPERION, c.kind());
+        assertFalse(c.impact());
+        assertTrue(c.reason().contains("without Wither Impact"));
     }
 
     @Test
-    void tooLittleManaFallsToTheTerminatorAndComesBackWhenItRegenerates() {
+    void lowManaKeepsTheHyperionAndLeavesTheSwitchToMeleeToTheFighter() {
         List<Weapons.Item> bar = List.of(DRILL, terminator(2), hyperion(3, true));
         Weapons.Choice low = Weapons.choose(bar, 0, "drill", 90, ALL, Set.of());
-        assertEquals(Kind.TERMINATOR, low.kind());
-        assertTrue(low.reason().contains("not enough mana"));
-        assertEquals(Kind.HYPERION, Weapons.choose(bar, 0, "drill", 400, ALL, Set.of()).kind());
-        // no mana reading at all isn't the same as no mana
+        assertEquals(Kind.HYPERION, low.kind());
+        assertTrue(low.impact());
+        assertTrue(low.reason().contains("left-clicking"));
         assertEquals(Kind.HYPERION, Weapons.choose(bar, 0, "drill", -1, ALL, Set.of()).kind());
     }
 
