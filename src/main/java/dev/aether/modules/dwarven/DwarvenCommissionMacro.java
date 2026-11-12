@@ -669,6 +669,7 @@ public final class DwarvenCommissionMacro {
             case CLAIM -> "claiming";
             case TRAVEL -> "travelling";
             case MINE -> "mining (" + miner.phase().name().toLowerCase().replace('_', ' ') + ")";
+            case FIGHT -> fighter.target() == null ? "fighting (looking)" : "fighting";
             case WAIT -> "waiting";
         };
     }
