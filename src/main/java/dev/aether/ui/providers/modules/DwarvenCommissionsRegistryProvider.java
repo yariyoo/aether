@@ -118,14 +118,64 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
         SettingGroup goblins = SettingGroup.alwaysOn("Goblin Slayer", "Goblin Burrows hunting and the weapon it uses")
                 .add(toggle("Enable Goblin Slayer", AetherConfig.DWARVEN_GOBLIN_SLAYER))
                 .add(toggle("Automatic Weapon Selection", AetherConfig.DWARVEN_AUTO_WEAPON))
-                .add(new InfoSetting("Weapon Priority", () -> "Hyperion (Wither Impact) > Terminator > best sword or shortbow by damage > mining tool").multiline())
+                .add(new InfoSetting("Weapon Priority", () -> "Hyperion (any, Wither Impact when scrolled) > Terminator > best sword or shortbow by damage > mining tool").multiline())
                 .add(toggle("Hyperion Enabled", AetherConfig.DWARVEN_HYPERION))
-                .add(toggle("Terminator Enabled", AetherConfig.DWARVEN_TERMINATOR))
+                .add(toggle("Terminator Enabled (Ranged Goblin Combat)", AetherConfig.DWARVEN_TERMINATOR))
                 .add(toggle("Other Combat Weapons Enabled", AetherConfig.DWARVEN_OTHER_WEAPONS))
                 .add(toggle("Mining Tool Fallback", AetherConfig.DWARVEN_TOOL_FALLBACK))
                 .add(slider("Target Search Radius", 12, 64, AetherConfig.DWARVEN_TARGET_RADIUS))
                 .add(toggle("Prefer Enemy Clusters", AetherConfig.DWARVEN_PREFER_CLUSTERS))
                 .add(slider("Maximum Target Engagement Seconds", 3, 60, AetherConfig.DWARVEN_MAX_ENGAGE_SECONDS));
+
+        SettingGroup hyperion = SettingGroup.alwaysOn("Hyperion", "Wither Impact teleports into goblins; left clicks while mana recovers")
+                .add(toggle("Enable Wither Impact Combat", AetherConfig.DWARVEN_WITHER_IMPACT))
+                .add(slider("Minimum Mana For Ability", 0, 2000, AetherConfig.DWARVEN_MIN_MANA))
+                .add(new InfoSetting("Minimum Mana Note", () -> "0 uses the cost listed on the item; recovery 0 waits for twice that").multiline())
+                .add(slider("Mana Recovery Threshold", 0, 5000, AetherConfig.DWARVEN_MANA_RECOVERY))
+                .add(toggle("Automatic Melee Fallback", AetherConfig.DWARVEN_MELEE_FALLBACK))
+                .add(toggle("Reenable Ability After Mana Recovery", AetherConfig.DWARVEN_REENABLE_ABILITY))
+                .add(slider("Ability Failure Cooldown Seconds", 1, 120, AetherConfig.DWARVEN_ABILITY_FAIL_COOLDOWN))
+                .add(slider("Maximum Repeated Ability Failures", 1, 10, AetherConfig.DWARVEN_MAX_ABILITY_FAILURES));
+
+        SettingGroup ranged = SettingGroup.alwaysOn("Terminator And Shortbows", "Shooting goblins from where you stand")
+                .add(slider("Maximum Effective Target Distance", 8, 60, AetherConfig.DWARVEN_RANGED_DISTANCE))
+                .add(toggle("Projectile Line-Of-Sight Validation", AetherConfig.DWARVEN_RANGED_LOS))
+                .add(toggle("Target Movement Prediction", AetherConfig.DWARVEN_RANGED_PREDICTION))
+                .add(toggle("Smooth Ranged Aiming", AetherConfig.DWARVEN_RANGED_SMOOTH))
+                .add(new DropdownSetting("Terminator Fire Input", List.of("Automatic (Verified By Arrows)", "Right Click", "Left Click"),
+                        () -> AetherConfig.DWARVEN_TERMINATOR_INPUT.get(), v -> save(() -> AetherConfig.DWARVEN_TERMINATOR_INPUT.set(v))));
+
+        SettingGroup melee = SettingGroup.alwaysOn("Melee", "Swords, a Hyperion out of mana, and the drill fallback")
+                .add(slider("Melee Attack Range", 2.0f, 4.5f, AetherConfig.DWARVEN_MELEE_RANGE, 1))
+                .add(new InfoSetting("Melee Note", () -> "Fast switching, revisit delay and attack confirmation are the Combat Mode, Target Revisit Delay and Attack Confirmation settings above").multiline());
+
+        SettingGroup combatDebug = SettingGroup.alwaysOn("Combat Debug", "Extra HUD rows while fighting")
+                .add(toggle("Show Selected Weapon", AetherConfig.DWARVEN_DEBUG_WEAPON))
+                .add(toggle("Show Combat Mode", AetherConfig.DWARVEN_DEBUG_MODE))
+                .add(toggle("Show Target Entity", AetherConfig.DWARVEN_DEBUG_TARGET))
+                .add(toggle("Show Distance To Target", AetherConfig.DWARVEN_DEBUG_DISTANCE))
+                .add(toggle("Show Ability Availability", AetherConfig.DWARVEN_DEBUG_ABILITY))
+                .add(toggle("Show Mana Fallback State", AetherConfig.DWARVEN_DEBUG_MANA))
+                .add(toggle("Show Attack Input State", AetherConfig.DWARVEN_DEBUG_INPUT))
+                .add(toggle("Show Attack Failure Reason", AetherConfig.DWARVEN_DEBUG_FAILURE))
+                .add(toggle("Show Confirmed Goblin Kills", AetherConfig.DWARVEN_DEBUG_KILLS));
+
+        SettingGroup diagnostics = SettingGroup.alwaysOn("Diagnostics", "Timed snapshots and events written to config/aether/dwarven/diag")
+                .add(toggle("High-Frequency Debug Enabled", AetherConfig.DWARVEN_DIAG))
+                .add(slider("Snapshot Interval Ms", 50, 1000, AetherConfig.DWARVEN_DIAG_INTERVAL_MS))
+                .add(toggle("Record Every State Transition", AetherConfig.DWARVEN_DIAG_TRANSITIONS))
+                .add(toggle("Record Pathfinding Timings", AetherConfig.DWARVEN_DIAG_PATHING))
+                .add(toggle("Record Route Execution Timings", AetherConfig.DWARVEN_DIAG_ROUTE))
+                .add(toggle("Record Movement Coordinates", AetherConfig.DWARVEN_DIAG_COORDS))
+                .add(toggle("Record Rotation Timings", AetherConfig.DWARVEN_DIAG_ROTATION))
+                .add(toggle("Record Mining Timings", AetherConfig.DWARVEN_DIAG_MINING))
+                .add(toggle("Record Recovery Timings", AetherConfig.DWARVEN_DIAG_RECOVERY))
+                .add(slider("Diagnostic Buffer Size", 512, 65536, AetherConfig.DWARVEN_DIAG_BUFFER))
+                .add(slider("Maximum Log File Size MB", 1, 64, AetherConfig.DWARVEN_DIAG_MAX_FILE_MB))
+                .add(slider("Log Rotation Count", 1, 20, AetherConfig.DWARVEN_DIAG_ROTATIONS))
+                .add(toggle("Performance Watchdog", AetherConfig.DWARVEN_WATCHDOG))
+                .add(slider("Watchdog Threshold Multiplier", 1.0f, 5.0f, AetherConfig.DWARVEN_WATCHDOG_SLACK, 1))
+                .add(new ActionSetting("Export Diagnostic Session", () -> Minecraft.getInstance().execute(DwarvenCommissionMacro::exportDiagnostics)));
 
         SettingGroup camera = SettingGroup.alwaysOn("Camera", "Smooth camera movement while mining")
                 .add(new DropdownSetting("Rotation Mode", List.of("Smooth", "Adaptive", "Precision"),
@@ -150,7 +200,8 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(toggle("HUD Debug Rows", AetherConfig.DWARVEN_HUD_DEBUG));
 
         return MainGUIRegistry.subTab("Dwarven Commissions", "Dwarven Mines commission macro",
-                List.of(general, commissions, discovery, mining, combat, goblins, navigation, camera, recovery));
+                List.of(general, commissions, discovery, mining, combat, goblins, hyperion, ranged, melee, combatDebug, navigation, camera,
+                        recovery, diagnostics));
     }
 
     private static void save(Runnable change) {
