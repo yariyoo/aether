@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 // carries out a mining objective: picks blocks, aims, digs, confirms each break and moves along the vein
 public final class DwarvenMiner {
-    public enum Phase { IDLE, PICK, AIM, DIG, ABILITY, PLAN_MOVE, WALK, WAIT_REGEN }
+    public enum Phase { IDLE, PICK, AIM, DIG, ABILITY_AIM, ABILITY, PLAN_MOVE, WALK, WAIT_REGEN }
 
     public enum Outcome { RUNNING, NO_ORE, TOOL_MISSING }
 
@@ -104,6 +104,16 @@ public final class DwarvenMiner {
     private BlockPos walkFrom;
     private long walkProgressAt;
     private boolean abilityReady = true;
+    // pickobulus is thrown and breaks the ore around where it lands, so it's aimed at the thickest ore first; other
+    // abilities (a speed boost) work wherever the camera points
+    private static boolean pickobulus;
+    private BlockPos throwAt;
+    private int throwOre;
+    private static final java.util.regex.Pattern PICKOBULUS_RESULT = java.util.regex.Pattern.compile("your pickobulus destroyed (\\d+) blocks");
+    private static final double PICKOBULUS_RADIUS = 2.5;
+    private static final double PICKOBULUS_RANGE = 12.0;
+    private static final int PICKOBULUS_MIN_ORE = 4;
+    private static final long THROW_AIM_LIMIT_MS = 1500L;
     private long abilityBlockedUntil;
     private boolean sneaking;
     private int mined;
@@ -155,6 +165,8 @@ public final class DwarvenMiner {
         stop(client);
         this.wanted = wanted;
         this.job = job;
+        // the tab list's "Pickaxe Ability" line names the ability before it is first used
+        if (dev.aether.util.TablistUtils.findLine(client, "pickobulus") != null) pickobulus = true;
         this.preferTitanium = job.titanium();
         this.area = area;
         this.outcome = Outcome.RUNNING;
@@ -185,7 +197,7 @@ public final class DwarvenMiner {
         if (phase == Phase.WALK) {
             PathfindingManager.stop();
             enter(Phase.PLAN_MOVE);
-        } else if (phase == Phase.AIM || phase == Phase.DIG || phase == Phase.ABILITY) {
+        } else if (phase == Phase.AIM || phase == Phase.DIG || phase == Phase.ABILITY || phase == Phase.ABILITY_AIM) {
             enter(Phase.PICK);
         }
         releaseAttack(client);
@@ -195,6 +207,12 @@ public final class DwarvenMiner {
 
     public void onChat(String message) {
         String text = message.strip().toLowerCase(Locale.ROOT);
+        if (text.contains("pickobulus")) pickobulus = true;
+        java.util.regex.Matcher m = PICKOBULUS_RESULT.matcher(text);
+        if (m.find()) {
+            DwarvenLog.log("miner: Pickobulus broke " + m.group(1) + " blocks" + (throwOre > 0 ? " (" + throwOre + " wanted ore were around where it was aimed)" : ""));
+            Ops.record("mine.pickobulus.blocks", Long.parseLong(m.group(1)));
+        }
         if (text.endsWith("is now available!")) {
             abilityReady = true;
         } else if (text.startsWith("you used your") && text.contains("pickaxe ability")) {
@@ -216,6 +234,7 @@ public final class DwarvenMiner {
             case PICK -> pick(client, world, now);
             case AIM -> aim(client, world, now);
             case DIG -> dig(client, world, now);
+            case ABILITY_AIM -> aimThrow(client, world, now);
             case ABILITY -> ability(client, now);
             case PLAN_MOVE -> planMove(client, world, now);
             case WALK -> walk(client, now);
@@ -267,7 +286,21 @@ public final class DwarvenMiner {
             spot = DwarvenStore.SPOTS.visit(client.player.blockPosition(), zone.isEmpty() ? area : zone, now);
             spotIdleSince = now;
         }
+        if (AetherConfig.DWARVEN_PICKAXE_ABILITY.get() && abilityReady && now >= abilityBlockedUntil && pickobulus) {
+            BlockPos at = densestOre(client, world);
+            if (at != null) {
+                Vec3 point = StandPlanner.visiblePoint(world, client.player.getEyePosition(), at, PICKOBULUS_RANGE);
+                if (point != null) {
+                    releaseAttack(client);
+                    throwAt = at;
+                    RotationManager.steer(client, point, DwarvenCamera.profile(DwarvenCamera.Activity.MINING));
+                    enter(Phase.ABILITY_AIM);
+                    return;
+                }
+            }
+        }
         if (AetherConfig.DWARVEN_PICKAXE_ABILITY.get() && abilityReady && now >= abilityBlockedUntil) {
+            throwOre = 0;
             releaseAttack(client);
             ClientUtils.performUseClickInstant();
             // if the game never confirms it in chat, the tool has no ability set up; don't keep clicking
@@ -404,8 +437,11 @@ public final class DwarvenMiner {
             return;
         }
         if (!RotationManager.isRotating()) {
-            // the first point can end up hidden once we stop moving; take a fresh visible one
-            Vec3 point = StandPlanner.visiblePoint(world, client.player.getEyePosition(), target, client.player.blockInteractionRange());
+            // the same point again while it still hits the block, so a miss isn't followed by a turn to a different
+            // spot; the first point can end up hidden once we stop moving, and then a fresh visible one is taken
+            Vec3 eye = client.player.getEyePosition();
+            Vec3 point = aimPoint != null && target.equals(world.rayHit(eye, aimPoint.add(aimPoint.subtract(eye).normalize().scale(0.1))))
+                    ? aimPoint : StandPlanner.visiblePoint(world, eye, target, client.player.blockInteractionRange());
             if (point == null) {
                 skip.put(target, now + MISS_SKIP_MS);
                 enter(Phase.PICK);
@@ -538,6 +574,41 @@ public final class DwarvenMiner {
         List<Long> sorted = new ArrayList<>(breakTimes);
         sorted.sort(null);
         return sorted.get(sorted.size() / 2);
+    }
+
+    // the wanted ore block in sight with the most wanted ore around it, where a pickobulus does the most
+    private BlockPos densestOre(Minecraft client, OreWorld world) {
+        Vec3 eye = client.player.getEyePosition();
+        BlockPos centre = BlockPos.containing(eye);
+        int r = (int) PICKOBULUS_RANGE;
+        List<BlockPos> ore = new ArrayList<>();
+        for (BlockPos p : BlockPos.betweenClosed(centre.offset(-r, -r, -r), centre.offset(r, r, r))) {
+            OreKind k = world.oreAt(p);
+            if (k != null && wanted.contains(k) && p.distToCenterSqr(eye) <= PICKOBULUS_RANGE * PICKOBULUS_RANGE) ore.add(p.immutable());
+        }
+        BlockPos best = null;
+        int bestCount = PICKOBULUS_MIN_ORE - 1;
+        for (BlockPos p : ore) {
+            int n = 0;
+            for (BlockPos q : ore) if (q.distSqr(p) <= PICKOBULUS_RADIUS * PICKOBULUS_RADIUS) n++;
+            if (n > bestCount && StandPlanner.visiblePoint(world, eye, p, PICKOBULUS_RANGE) != null) {
+                bestCount = n;
+                best = p;
+            }
+        }
+        throwOre = best == null ? 0 : bestCount;
+        return best;
+    }
+
+    private void aimThrow(Minecraft client, OreWorld world, long now) {
+        boolean onIt = crosshairOn(client, throwAt);
+        if (onIt || !RotationManager.isRotating() || now - phaseSince > THROW_AIM_LIMIT_MS) {
+            ClientUtils.performUseClickInstant();
+            abilityBlockedUntil = now + ABILITY_RETRY_MS;
+            DwarvenLog.log("miner: Pickobulus thrown at " + throwAt.toShortString() + ", " + throwOre + " wanted ore within its blast"
+                    + (onIt ? "" : " (thrown before the crosshair settled on it)"));
+            enter(Phase.ABILITY);
+        }
     }
 
     private void ability(Minecraft client, long now) {
