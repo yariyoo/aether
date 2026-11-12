@@ -13,6 +13,7 @@ public final class DwarvenStats {
     private long travelMsThisCommission;
     private long travelMsTotal;
     private int kills;
+    private int wrongAreas;
     private long fightMs;
 
     public synchronized void reset() {
@@ -24,6 +25,7 @@ public final class DwarvenStats {
         travelMsThisCommission = 0;
         travelMsTotal = 0;
         kills = 0;
+        wrongAreas = 0;
         fightMs = 0;
     }
 
@@ -46,6 +48,14 @@ public final class DwarvenStats {
     public synchronized void trip(boolean arrived) {
         trips++;
         if (arrived) tripsArrived++;
+    }
+
+    public synchronized void wrongArea() {
+        wrongAreas++;
+    }
+
+    public synchronized int wrongAreas() {
+        return wrongAreas;
     }
 
     public synchronized void kill() {

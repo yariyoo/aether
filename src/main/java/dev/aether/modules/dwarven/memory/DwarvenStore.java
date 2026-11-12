@@ -23,7 +23,8 @@ public final class DwarvenStore {
     public static final dev.aether.modules.dwarven.claim.Emissaries EMISSARIES = new dev.aether.modules.dwarven.claim.Emissaries();
     public static final WorkStats WORK = new WorkStats(75.0);
     private static boolean loaded;
-    private static final String AREAS_VERSION = "@v2";
+    // v3: cells saved before the zone line was checked for freshness learned the previous zone's name after teleports
+    private static final String AREAS_VERSION = "@v3";
     private static boolean workDirty;
 
     private DwarvenStore() {}
@@ -36,7 +37,7 @@ public final class DwarvenStore {
         // zone cells saved before the seed was cleaned carry mislabelled spots; start those over from the clean seed
         if ((o = read("areas.json")) != null) {
             if (o.has(AREAS_VERSION)) AREAS.load(o);
-            else DwarvenLog.log("discarded zone cells learned from the old, mislabelled seed");
+            else DwarvenLog.log("discarded zone cells learned before stale zone readings were filtered; starting from the clean seed");
         }
         if ((o = read("trails.json")) != null) TRAILS.load(o);
         if ((o = read("work.json")) != null) WORK.load(o);

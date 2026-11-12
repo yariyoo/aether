@@ -13,8 +13,17 @@ import java.util.Set;
 
 // where each named zone really is, learned from the scoreboard's zone line as the player moves around
 public final class AreaMemory {
+    public enum Confidence { VERIFIED_CORRECT_AREA, LIKELY_CORRECT_AREA, UNVERIFIED, VERIFIED_WRONG_AREA }
+
     private static final int CELL = 4;
+    private static final String WRONG_PREFIX = "!wrong:";
+    // a destination within this of one confirmed to be in another zone shares its verdict
+    private static final double WRONG_RADIUS = 3.0;
+    // points on a border need a little more travel than interior ones to be worth it
+    private static final double BORDER_PENALTY = 12.0;
     private final Map<String, Set<Long>> cells = new HashMap<>();
+    // destinations reached and found, once the scoreboard caught up, to be in another zone
+    private final Map<String, Set<Long>> wrongGoals = new HashMap<>();
     private boolean dirty;
 
     private static String key(String area) {
@@ -24,6 +33,32 @@ public final class AreaMemory {
     public void observe(String area, BlockPos pos) {
         if (area == null || area.isBlank()) return;
         if (cells.computeIfAbsent(key(area), k -> new HashSet<>()).add(cell(pos))) dirty = true;
+        // standing on a spot marked wrong and seeing the right zone is new evidence that overturns the verdict
+        Set<Long> wrong = wrongGoals.get(key(area));
+        if (wrong != null && wrong.removeIf(g -> BlockPos.of(g).distSqr(pos) <= 2.25)) dirty = true;
+    }
+
+    public void markWrongGoal(String area, BlockPos goal) {
+        if (area == null || goal == null) return;
+        if (wrongGoals.computeIfAbsent(key(area), k -> new HashSet<>()).add(goal.asLong())) dirty = true;
+    }
+
+    public boolean wrongGoal(String area, BlockPos pos) {
+        Set<Long> wrong = area == null ? null : wrongGoals.get(key(area));
+        if (wrong == null) return false;
+        for (long g : wrong) if (BlockPos.of(g).distSqr(pos) <= WRONG_RADIUS * WRONG_RADIUS) return true;
+        return false;
+    }
+
+    // how sure we are that standing here counts as being in the area
+    public Confidence confidence(String area, BlockPos pos) {
+        if (wrongGoal(area, pos)) return Confidence.VERIFIED_WRONG_AREA;
+        String at = areaAt(pos);
+        if (at != null && !at.equalsIgnoreCase(key(area))) return Confidence.VERIFIED_WRONG_AREA;
+        if (!contains(area, pos)) return Confidence.UNVERIFIED;
+        Set<Long> own = cells.get(key(area));
+        // its own cell seen in this area and no other zone claiming anything around it: an interior point
+        return own.contains(cell(pos)) && at != null ? Confidence.VERIFIED_CORRECT_AREA : Confidence.LIKELY_CORRECT_AREA;
     }
 
     public boolean knows(String area) {
@@ -55,8 +90,33 @@ public final class AreaMemory {
     // a point belongs to an area unless it is known to be in a different one
     public boolean allows(String area, BlockPos pos) {
         if (area == null) return true;
-        String at = areaAt(pos);
-        return at == null || at.equalsIgnoreCase(area);
+        return confidence(area, pos) != Confidence.VERIFIED_WRONG_AREA;
+    }
+
+    // the best place to head for in an area: never a confirmed-wrong one, interior points before border ones
+    public BlockPos bestPoint(String area, BlockPos from, java.util.Collection<BlockPos> avoid, double avoidRadius) {
+        Set<Long> seen = cells.get(key(area));
+        if (seen == null || seen.isEmpty()) return null;
+        BlockPos best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (long packed : seen) {
+            BlockPos p = centre(packed);
+            boolean nearFailure = false;
+            for (BlockPos a : avoid) if (a.distSqr(p) <= avoidRadius * avoidRadius) nearFailure = true;
+            if (nearFailure) continue;
+            Confidence c = confidence(area, p);
+            if (c == Confidence.VERIFIED_WRONG_AREA) continue;
+            double score = Math.sqrt(p.distSqr(from)) + (c == Confidence.VERIFIED_CORRECT_AREA ? 0 : BORDER_PENALTY);
+            if (score < bestScore) {
+                bestScore = score;
+                best = p;
+            }
+        }
+        return best;
+    }
+
+    private static BlockPos centre(long packed) {
+        return new BlockPos(BlockPos.getX(packed) * CELL + CELL / 2, BlockPos.getY(packed) * CELL, BlockPos.getZ(packed) * CELL + CELL / 2);
     }
 
     public BlockPos nearestPoint(String area, BlockPos from) {
@@ -70,7 +130,7 @@ public final class AreaMemory {
         BlockPos best = null;
         double bestDistance = Double.MAX_VALUE;
         for (long packed : seen) {
-            BlockPos p = new BlockPos(BlockPos.getX(packed) * CELL + CELL / 2, BlockPos.getY(packed) * CELL, BlockPos.getZ(packed) * CELL + CELL / 2);
+            BlockPos p = centre(packed);
             boolean nearFailure = false;
             for (BlockPos a : avoid) if (a.distSqr(p) <= avoidRadius * avoidRadius) nearFailure = true;
             if (nearFailure) continue;
@@ -108,16 +168,23 @@ public final class AreaMemory {
             seen.forEach(a::add);
             root.add(area, a);
         });
+        wrongGoals.forEach((area, goals) -> {
+            JsonArray a = new JsonArray();
+            goals.forEach(a::add);
+            root.add(WRONG_PREFIX + area, a);
+        });
         dirty = false;
         return root;
     }
 
     public void load(JsonObject root) {
         cells.clear();
+        wrongGoals.clear();
         for (String area : root.keySet()) {
             Set<Long> seen = new HashSet<>();
             for (JsonElement el : root.getAsJsonArray(area)) seen.add(el.getAsLong());
-            cells.put(area, seen);
+            if (area.startsWith(WRONG_PREFIX)) wrongGoals.put(area.substring(WRONG_PREFIX.length()), seen);
+            else cells.put(area, seen);
         }
     }
 }

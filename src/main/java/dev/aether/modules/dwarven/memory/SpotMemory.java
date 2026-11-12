@@ -100,10 +100,17 @@ public final class SpotMemory {
 
     // best known spot for an area: learned rate against the time to get there
     public Spot best(String area, long now, long recheckMs, double priorRate, Set<BlockPos> avoid, ToDoubleFunction<BlockPos> travelSeconds) {
+        return best(area, now, recheckMs, priorRate, avoid, travelSeconds, p -> true);
+    }
+
+    // eligible is the area check: a spot labelled with the area can still have been shown to sit just outside it
+    public Spot best(String area, long now, long recheckMs, double priorRate, Set<BlockPos> avoid, ToDoubleFunction<BlockPos> travelSeconds,
+                     java.util.function.Predicate<BlockPos> eligible) {
         Spot best = null;
         double bestScore = 0;
         for (Spot s : spots) {
             if (area != null && !area.equalsIgnoreCase(s.area)) continue;
+            if (!eligible.test(s.pos)) continue;
             if (avoid.contains(s.pos) || now < s.blockedUntil) continue;
             if (s.emptyAt > 0 && now - s.emptyAt < recheckMs) continue;
             double score = s.rate(priorRate) / (15.0 + travelSeconds.applyAsDouble(s.pos));
