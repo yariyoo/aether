@@ -84,13 +84,29 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(toggle("Sneak While Mining", AetherConfig.DWARVEN_SNEAK))
                 .add(toggle("Use Pickaxe Ability", AetherConfig.DWARVEN_PICKAXE_ABILITY));
 
+        SettingGroup combat = SettingGroup.alwaysOn("Combat", "Slayer and puncher commissions, fought with the mining tool")
+                .add(new DropdownSetting("Combat Mode", List.of("Adaptive", "Fast Hit-And-Move", "Confirmed Kill"),
+                        () -> AetherConfig.DWARVEN_COMBAT_MODE.get(), v -> save(() -> AetherConfig.DWARVEN_COMBAT_MODE.set(v))))
+                .add(slider("Target Revisit Delay Ms", 200, 10000, AetherConfig.DWARVEN_REVISIT_MS))
+                .add(slider("Attack Confirmation Timeout Ms", 250, 10000, AetherConfig.DWARVEN_CONFIRM_MS))
+                .add(slider("Minimum Target Switch Interval Ms", 0, 2000, AetherConfig.DWARVEN_SWITCH_MS))
+                .add(slider("Maximum Pending Attacks", 1, 10, AetherConfig.DWARVEN_MAX_PENDING))
+                .add(toggle("Learn How Many Hits A Kill Takes", AetherConfig.DWARVEN_COMBAT_LEARNING))
+                .add(toggle("Wait For Respawns Instead Of Giving Up", AetherConfig.DWARVEN_RESPAWN_SEARCH))
+                .add(slider("Mob Scan Interval Ms", 50, 2000, AetherConfig.DWARVEN_MOB_SCAN_MS))
+                .add(toggle("Remember Spawn Locations", AetherConfig.DWARVEN_SPAWN_MEMORY))
+                .add(slider("Maximum Empty Location Seconds", 5, 600, AetherConfig.DWARVEN_MAX_EMPTY_SECONDS))
+                .add(toggle("Move Between Spawns While Waiting", AetherConfig.DWARVEN_REPOSITION_SPAWNS));
+
         SettingGroup navigation = SettingGroup.alwaysOn("Navigation", "How it gets between areas")
                 .add(toggle("Warp To Forge When Faster", AetherConfig.DWARVEN_FORGE_WARP))
                 .add(toggle("Use Etherwarp When Available", AetherConfig.DWARVEN_USE_ETHERWARP))
                 .add(toggle("Learn And Reuse Walked Routes", AetherConfig.DWARVEN_LEARN_TRAILS))
                 .add(slider("Stuck Timeout Seconds", 2, 30, AetherConfig.DWARVEN_STUCK_SECONDS))
                 .add(slider("Navigation Retries", 1, 10, AetherConfig.DWARVEN_NAV_RETRIES))
-                .add(slider("Longest Single Walk Blocks", 8, 48, AetherConfig.DWARVEN_LEG_LENGTH));
+                .add(slider("Longest Single Walk Blocks", 8, 48, AetherConfig.DWARVEN_LEG_LENGTH))
+                .add(slider("Failed Teleport Blacklist Seconds", 10, 3600, AetherConfig.DWARVEN_ROUTE_BLACKLIST_SECONDS))
+                .add(slider("Forge Warp Confirmation Timeout Ms", 1000, 20000, AetherConfig.DWARVEN_WARP_TIMEOUT_MS));
 
         SettingGroup camera = SettingGroup.alwaysOn("Camera", "Smooth camera movement while mining")
                 .add(new DropdownSetting("Rotation Mode", List.of("Smooth", "Adaptive", "Precision"),
@@ -115,7 +131,7 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(toggle("HUD Debug Rows", AetherConfig.DWARVEN_HUD_DEBUG));
 
         return MainGUIRegistry.subTab("Dwarven Commissions", "Dwarven Mines commission macro",
-                List.of(general, commissions, discovery, mining, navigation, camera, recovery));
+                List.of(general, commissions, discovery, mining, combat, navigation, camera, recovery));
     }
 
     private static void save(Runnable change) {

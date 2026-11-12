@@ -3,7 +3,7 @@ package dev.aether.modules.dwarven.fight;
 import dev.aether.config.AetherConfig;
 import dev.aether.modules.dwarven.DwarvenLog;
 import dev.aether.modules.dwarven.camera.DwarvenCamera;
-import dev.aether.modules.dwarven.memory.HuntPoints;
+import dev.aether.modules.dwarven.memory.DwarvenStore;
 import dev.aether.modules.failsafe.FailsafeManager;
 import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.modules.rotation.RotationManager;
@@ -22,6 +22,7 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -29,38 +30,47 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-// hunts the mobs a slayer or puncher commission asks for: finds them by their name tag, walks over and hits them
+// hunts the mobs a slayer or puncher commission asks for: finds them by their name tag, walks over and hits them.
+// a hit can move straight on to the next mob while the first one's death is still being confirmed
 public final class DwarvenFighter {
-    public enum Outcome { RUNNING, NO_TARGETS }
+    public enum Outcome { RUNNING, WAITING_FOR_RESPAWN, NO_TARGETS }
 
-    private enum Phase { IDLE, SEEK, CHASE, HIT, ROAM }
+    private enum Phase { IDLE, SEARCHING, ENGAGING, WAITING_FOR_RESPAWN, REPOSITIONING }
 
     // hypixel name tags read "[Lv23] Goblin 800/800❤", with font icons between the parts on 26.2
     private static final Pattern TAG = Pattern.compile("\\[Lv\\d+][^A-Za-z]*([A-Za-z' ]+?)\\s+([\\d,.]+)([kKmM]?)/");
     private static final double HIT_REACH = 3.0;
     private static final double SIGHT = 48.0;
     private static final long REPLAN_MS = 1200L;
+    // one swing every few ticks is what a player clicking quickly manages; never faster
     private static final long HIT_GAP_MS = 140L;
     private static final long TARGET_GIVE_UP_MS = 12_000L;
     private static final long IGNORE_TARGET_MS = 15_000L;
-    private static final long ROAM_POINT_RECHECK_MS = 60_000L;
-    private static final int ROAM_POINTS_BEFORE_GIVING_UP = 4;
+    private static final double AT_SPAWN = 6.0;
+    private static final long SPAWN_EMPTY_RECHECK_MS = 60_000L;
+    private static final int OLD_STYLE_SPOTS = 4;
 
     private Phase phase = Phase.IDLE;
     private Outcome outcome = Outcome.RUNNING;
     private Set<String> mobs = Set.of();
-    private Entity target;
+    private final AttackLog attacks = new AttackLog();
+    private LivingEntity target;
     private long targetSince;
     private long lastHitAt;
+    private long lastSwitchAt;
     private long lastPlanAt;
+    private long lastScanAt;
+    private long waitSince;
+    private BlockPos waitSpot;
     private BlockPos walkGoal;
     private double walkBest;
     private long walkProgressAt;
     private AtomicInteger walkResult = new AtomicInteger();
     private int hits;
-    private int roamed;
+    private int oldStyleSpots;
+    private boolean announcedMoveOn;
     private final Map<Integer, Long> ignored = new HashMap<>();
-    private final Map<BlockPos, Long> roamedAt = new HashMap<>();
+    private final Set<BlockPos> emptyThisRun = new HashSet<>();
 
     public Outcome outcome() {
         return outcome;
@@ -74,22 +84,33 @@ public final class DwarvenFighter {
         return hits;
     }
 
+    public int kills() {
+        return attacks.kills();
+    }
+
     public Entity target() {
         return target;
+    }
+
+    public String phaseName() {
+        return phase.name().toLowerCase(Locale.ROOT).replace('_', ' ');
     }
 
     public void start(Minecraft client, Set<String> mobNames) {
         stop(client);
         mobs = mobNames;
         outcome = Outcome.RUNNING;
-        roamed = 0;
+        oldStyleSpots = 0;
+        announcedMoveOn = false;
         ignored.clear();
-        phase = Phase.SEEK;
-        DwarvenLog.log("fighter: hunting " + mobNames);
+        emptyThisRun.clear();
+        attacks.reset();
+        phase = Phase.SEARCHING;
+        DwarvenLog.log("combat: hunting " + mobNames + ", mode " + mode());
     }
 
     public void stop(Minecraft client) {
-        if (phase == Phase.CHASE || phase == Phase.ROAM) PathfindingManager.stop();
+        if (walkGoal != null) PathfindingManager.stop();
         if (phase != Phase.IDLE) RotationManager.cancelRotation();
         phase = Phase.IDLE;
         target = null;
@@ -97,46 +118,57 @@ public final class DwarvenFighter {
     }
 
     public void pause(Minecraft client) {
-        if (phase == Phase.CHASE || phase == Phase.ROAM) PathfindingManager.stop();
+        if (walkGoal != null) PathfindingManager.stop();
         walkGoal = null;
-        if (phase != Phase.IDLE) phase = Phase.SEEK;
+        target = null;
+        if (phase != Phase.IDLE) phase = Phase.SEARCHING;
+    }
+
+    private static AttackLog.Mode mode() {
+        return AttackLog.Mode.values()[AetherConfig.DWARVEN_COMBAT_MODE.get()];
     }
 
     public void tick(Minecraft client) {
         if (phase == Phase.IDLE || client.player == null || client.level == null) return;
         long now = System.currentTimeMillis();
         ignored.values().removeIf(until -> until <= now);
+        attacks.forgetOld(now);
+        confirmDeaths(client);
         if (target != null && (!target.isAlive() || target.isRemoved() || dead(client, target))) {
-            DwarvenLog.log("fighter: target down after " + (now - targetSince) + "ms");
             target = null;
-            phase = Phase.SEEK;
+            lastSwitchAt = now;
         }
-        if (target == null || phase == Phase.ROAM) {
-            Entity found = findTarget(client);
-            if (found != null) {
-                if (phase == Phase.ROAM) PathfindingManager.stop();
-                target = found;
-                targetSince = now;
-                roamed = 0;
-                walkGoal = null;
-                phase = Phase.CHASE;
-                DwarvenLog.log("fighter: target at " + found.blockPosition().toShortString() + ", "
-                        + String.format("%.1f", found.distanceTo(client.player)) + " blocks");
-            } else if (phase != Phase.ROAM) {
-                roam(client, now);
+        if (target == null) {
+            boolean waiting = phase == Phase.WAITING_FOR_RESPAWN || phase == Phase.REPOSITIONING;
+            long scanEvery = waiting ? AetherConfig.DWARVEN_MOB_SCAN_MS.get() : 0L;
+            if (now - lastSwitchAt < AetherConfig.DWARVEN_SWITCH_MS.get() || now - lastScanAt < scanEvery) {
+                if (phase == Phase.REPOSITIONING) tickReposition(client, now);
                 return;
             }
-        }
-        if (phase == Phase.ROAM) {
-            tickRoam(client, now);
-            return;
+            lastScanAt = now;
+            Found found = findTarget(client, now);
+            if (found == null) {
+                noTargets(client, now);
+                return;
+            }
+            if (waiting) {
+                DwarvenLog.log("combat: " + found.name + " spawned; resuming hunt");
+                if (walkGoal != null) PathfindingManager.stop();
+                walkGoal = null;
+            }
+            if (AetherConfig.DWARVEN_SPAWN_MEMORY.get()) DwarvenStore.SPAWNS.sighted(found.name, found.mob.blockPosition(), now);
+            target = found.mob;
+            targetSince = now;
+            oldStyleSpots = 0;
+            outcome = Outcome.RUNNING;
+            phase = Phase.ENGAGING;
         }
         if (now - targetSince > TARGET_GIVE_UP_MS) {
-            DwarvenLog.log("fighter: couldn't finish the target at " + target.blockPosition().toShortString() + " in time, ignoring it a while");
+            DwarvenLog.log("combat: couldn't finish the mob at " + target.blockPosition().toShortString() + " in time, ignoring it a while");
             ignored.put(target.getId(), now + IGNORE_TARGET_MS);
-            PathfindingManager.stop();
+            if (walkGoal != null) PathfindingManager.stop();
+            walkGoal = null;
             target = null;
-            phase = Phase.SEEK;
             return;
         }
         Vec3 body = target.getBoundingBox().getCenter();
@@ -152,8 +184,19 @@ public final class DwarvenFighter {
         }
     }
 
+    // deaths are confirmed on their own schedule, separately from where the fighter is looking now
+    private void confirmDeaths(Minecraft client) {
+        for (AttackLog.Entry e : attacks.unresolved()) {
+            Entity mob = client.level.getEntity(e.id);
+            boolean gone = mob == null || !mob.isAlive() || mob.isRemoved() || dead(client, mob);
+            if (gone && attacks.recordDeath(e.id)) {
+                DwarvenLog.log("combat: kill confirmed after " + e.hits + (e.hits == 1 ? " hit" : " hits")
+                        + String.format(" (one-hit kills %.0f%%, %d kills)", attacks.oneHitRate() * 100, attacks.kills()));
+            }
+        }
+    }
+
     private void hit(Minecraft client, Vec3 body, long now) {
-        phase = Phase.HIT;
         int weapon = weaponSlot(client);
         if (weapon >= 0 && FailsafeManager.getCurrentSelectedSlot(client) != weapon) {
             FailsafeManager.selectHotbarSlot(client, weapon);
@@ -162,50 +205,93 @@ public final class DwarvenFighter {
         RotationManager.steer(client, body, DwarvenCamera.profile());
         HitResult hit = client.hitResult;
         boolean onTarget = hit instanceof EntityHitResult e && e.getEntity() == target;
-        if (onTarget && now - lastHitAt >= HIT_GAP_MS) {
-            ClientUtils.performAttackClick();
-            lastHitAt = now;
-            hits++;
+        if (!onTarget || now - lastHitAt < HIT_GAP_MS) return;
+        ClientUtils.performAttackClick();
+        lastHitAt = now;
+        hits++;
+        attacks.recordHit(target.getId(), now);
+        boolean moveOn = attacks.moveOnAfterHit(mode(), AetherConfig.DWARVEN_COMBAT_LEARNING.get())
+                && attacks.pendingCount(now, AetherConfig.DWARVEN_CONFIRM_MS.get()) <= AetherConfig.DWARVEN_MAX_PENDING.get();
+        if (moveOn) {
+            if (!announcedMoveOn) {
+                announcedMoveOn = true;
+                DwarvenLog.log("combat: attacked; outcome pending, selecting the next target without waiting");
+            }
+            target = null;
+            lastSwitchAt = now;
         }
     }
 
     private void chase(Minecraft client, long now) {
         BlockPos at = target.blockPosition();
         boolean moved = walkGoal == null || walkGoal.distSqr(at) > 9;
-        if (phase != Phase.CHASE || (moved && now - lastPlanAt > REPLAN_MS) || walkResult.get() == 2) {
-            phase = Phase.CHASE;
-            walkTo(client, at, now);
-        }
-        // keep looking where we're going so the turn to hit is short once in reach
-        if (client.player.distanceTo(target) < 8) RotationManager.steer(client, target.getBoundingBox().getCenter(), DwarvenCamera.profile());
+        if ((moved && now - lastPlanAt > REPLAN_MS) || walkResult.get() == 2) walkTo(client, at, now);
     }
 
-    private void roam(Minecraft client, long now) {
+    private void noTargets(Minecraft client, long now) {
         BlockPos feet = client.player.blockPosition();
-        roamedAt.values().removeIf(at -> now - at > ROAM_POINT_RECHECK_MS);
-        BlockPos best = null;
-        double bestDistance = Double.MAX_VALUE;
-        for (BlockPos p : HuntPoints.points(mobs)) {
-            if (roamedAt.containsKey(p) || p.distSqr(feet) < 16) continue;
-            double d = p.distSqr(feet);
-            if (d < bestDistance) {
-                bestDistance = d;
-                best = p;
-            }
-        }
-        if (best == null || roamed >= ROAM_POINTS_BEFORE_GIVING_UP) {
-            if (outcome != Outcome.NO_TARGETS) DwarvenLog.log("fighter: no " + mobs + " found after checking " + roamed + " spots");
-            outcome = Outcome.NO_TARGETS;
+        if (!AetherConfig.DWARVEN_RESPAWN_SEARCH.get()) {
+            oldStyleNoTargets(client, now, feet);
             return;
         }
-        roamed++;
-        roamedAt.put(best, now);
-        DwarvenLog.log("fighter: none in sight, checking " + best.toShortString() + " where they were fought before");
-        walkTo(client, best, now);
-        phase = Phase.ROAM;
+        outcome = Outcome.WAITING_FOR_RESPAWN;
+        if (phase == Phase.REPOSITIONING) {
+            tickReposition(client, now);
+            return;
+        }
+        if (phase != Phase.WAITING_FOR_RESPAWN) {
+            DwarvenLog.log("combat: no mobs available; entering respawn wait");
+            BlockPos spot = AetherConfig.DWARVEN_REPOSITION_SPAWNS.get()
+                    ? DwarvenStore.SPAWNS.best(mobs, feet, now, SPAWN_EMPTY_RECHECK_MS, emptyThisRun) : null;
+            if (spot != null && Math.sqrt(spot.distSqr(feet)) > AT_SPAWN) {
+                reposition(client, spot, now, "heading to the busiest known spawn at ");
+                return;
+            }
+            phase = Phase.WAITING_FOR_RESPAWN;
+            waitSince = now;
+            waitSpot = feet;
+            return;
+        }
+        long maxEmpty = AetherConfig.DWARVEN_MAX_EMPTY_SECONDS.get() * 1000L;
+        if (now - waitSince < maxEmpty || !AetherConfig.DWARVEN_REPOSITION_SPAWNS.get()) return;
+        // this spot stayed empty unusually long; try another known one instead of camping here forever
+        DwarvenStore.SPAWNS.empty(waitSpot, mobs, now);
+        emptyThisRun.add(nearestCell(waitSpot));
+        BlockPos next = DwarvenStore.SPAWNS.best(mobs, feet, now, SPAWN_EMPTY_RECHECK_MS, emptyThisRun);
+        if (next == null || Math.sqrt(next.distSqr(feet)) <= AT_SPAWN) {
+            emptyThisRun.clear();
+            waitSince = now;
+            return;
+        }
+        reposition(client, next, now, "empty for " + maxEmpty / 1000 + "s, trying the spawn at ");
     }
 
-    private void tickRoam(Minecraft client, long now) {
+    private BlockPos nearestCell(BlockPos p) {
+        BlockPos best = p;
+        double bestDistance = Double.MAX_VALUE;
+        for (BlockPos c : DwarvenStore.SPAWNS.all(mobs)) {
+            double d = c.distSqr(p);
+            if (d < bestDistance) {
+                bestDistance = d;
+                best = c;
+            }
+        }
+        return best;
+    }
+
+    private void reposition(Minecraft client, BlockPos spot, long now, String why) {
+        DwarvenLog.log("combat: " + why + spot.toShortString());
+        walkTo(client, spot, now);
+        phase = Phase.REPOSITIONING;
+    }
+
+    private void tickReposition(Minecraft client, long now) {
+        if (walkGoal == null) {
+            phase = Phase.WAITING_FOR_RESPAWN;
+            waitSince = now;
+            waitSpot = client.player.blockPosition();
+            return;
+        }
         double left = Math.sqrt(walkGoal.distSqr(client.player.blockPosition()));
         if (left < walkBest - 0.5) {
             walkBest = left;
@@ -214,10 +300,32 @@ public final class DwarvenFighter {
         boolean stuck = now - walkProgressAt > AetherConfig.DWARVEN_STUCK_SECONDS.get() * 1000L;
         if (walkResult.get() != 0 || left <= 2.5 || stuck) {
             PathfindingManager.stop();
-            if (stuck) DwarvenLog.log("fighter: stuck walking to " + walkGoal.toShortString());
+            if (stuck) DwarvenLog.log("combat: stuck walking to " + walkGoal.toShortString() + ", waiting here instead");
             walkGoal = null;
-            phase = Phase.SEEK;
+            phase = Phase.WAITING_FOR_RESPAWN;
+            waitSince = now;
+            waitSpot = client.player.blockPosition();
         }
+    }
+
+    // with persistent search off: look at a few known spots, then report that there is nothing here
+    private void oldStyleNoTargets(Minecraft client, long now, BlockPos feet) {
+        if (phase == Phase.REPOSITIONING) {
+            tickReposition(client, now);
+            return;
+        }
+        if (oldStyleSpots >= OLD_STYLE_SPOTS) {
+            outcome = Outcome.NO_TARGETS;
+            return;
+        }
+        BlockPos spot = DwarvenStore.SPAWNS.best(mobs, feet, now, 0L, emptyThisRun);
+        if (spot == null) {
+            outcome = Outcome.NO_TARGETS;
+            return;
+        }
+        oldStyleSpots++;
+        emptyThisRun.add(spot);
+        reposition(client, spot, now, "none in sight, checking ");
     }
 
     private void walkTo(Minecraft client, BlockPos goal, long now) {
@@ -232,10 +340,16 @@ public final class DwarvenFighter {
                 () -> result.compareAndSet(0, 1), () -> result.compareAndSet(0, 2), true, 1.5, false, true);
     }
 
-    private Entity findTarget(Minecraft client) {
+    private record Found(LivingEntity mob, String name) {}
+
+    // nearby mobs first; ones we just hit are passed over while their outcome is pending, unless nothing else is left
+    private Found findTarget(Minecraft client, long now) {
         Vec3 eye = client.player.getEyePosition();
-        Entity best = null;
+        Found best = null;
+        Found bestPending = null;
         double bestCost = Double.MAX_VALUE;
+        double bestPendingCost = Double.MAX_VALUE;
+        long revisit = AetherConfig.DWARVEN_REVISIT_MS.get();
         for (Entity e : client.level.entitiesForRendering()) {
             if (!(e instanceof ArmorStand stand) || !stand.hasCustomName()) continue;
             Tag tag = parse(stand.getCustomName());
@@ -246,12 +360,17 @@ public final class DwarvenFighter {
             if (distance > SIGHT) continue;
             // height changes cost more than flat ground since they usually mean a detour
             double cost = distance + Math.abs(mob.getY() - client.player.getY()) * 2.0;
-            if (cost < bestCost) {
+            if (attacks.pending(mob.getId(), now, revisit)) {
+                if (cost < bestPendingCost) {
+                    bestPendingCost = cost;
+                    bestPending = new Found(mob, tag.name);
+                }
+            } else if (cost < bestCost) {
                 bestCost = cost;
-                best = mob;
+                best = new Found(mob, tag.name);
             }
         }
-        return best;
+        return best != null ? best : bestPending;
     }
 
     // whether any living mob with one of these tag names is within range, used to tell if an event is happening here

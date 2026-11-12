@@ -19,6 +19,7 @@ public final class DwarvenStore {
     public static final SpotMemory SPOTS = new SpotMemory();
     public static final AreaMemory AREAS = new AreaMemory();
     public static final TrailMemory TRAILS = new TrailMemory();
+    public static final SpawnMemory SPAWNS = new SpawnMemory();
     public static final dev.aether.modules.dwarven.claim.Emissaries EMISSARIES = new dev.aether.modules.dwarven.claim.Emissaries();
     public static final WorkStats WORK = new WorkStats(75.0);
     private static boolean loaded;
@@ -34,6 +35,7 @@ public final class DwarvenStore {
         if ((o = read("areas.json")) != null) AREAS.load(o);
         if ((o = read("trails.json")) != null) TRAILS.load(o);
         if ((o = read("work.json")) != null) WORK.load(o);
+        if ((o = read("spawns.json")) != null) SPAWNS.load(o);
         if ((o = read("emissaries.json")) != null) EMISSARIES.load(o);
         seed();
         DwarvenLog.log("memory loaded: " + SPOTS.all().size() + " spots, " + TRAILS.size() + " trail points");
@@ -53,7 +55,13 @@ public final class DwarvenStore {
                     cells++;
                 }
             }
-            if (root.has("hunts")) HuntPoints.load(root.getAsJsonObject("hunts"));
+            if (root.has("hunts")) {
+                JsonObject hunts = root.getAsJsonObject("hunts");
+                HuntPoints.load(hunts);
+                for (String mob : hunts.keySet()) {
+                    for (net.minecraft.core.BlockPos p : HuntPoints.points(java.util.List.of(mob))) SPAWNS.seed(mob, p);
+                }
+            }
             if (root.has("trails")) {
                 JsonObject trails = root.getAsJsonObject("trails");
                 for (var path : trails.getAsJsonArray("paths")) {
@@ -87,6 +95,7 @@ public final class DwarvenStore {
         if (SPOTS.dirty()) write("spots.json", SPOTS.toJson());
         if (AREAS.dirty()) write("areas.json", AREAS.toJson());
         if (TRAILS.dirty()) write("trails.json", TRAILS.toJson());
+        if (SPAWNS.dirty()) write("spawns.json", SPAWNS.toJson());
         if (EMISSARIES.dirty()) write("emissaries.json", EMISSARIES.toJson());
         if (workDirty) {
             write("work.json", WORK.toJson());

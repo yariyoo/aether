@@ -57,6 +57,11 @@ public final class DwarvenCommissionMacro {
     private static final long FIGHT_STALL_MS = 90_000L;
     private static final double NEAR_HUNT_POINT = 24.0;
     private static final double RAID_SIGHT = 40.0;
+    private static final int FIGHT_STALL_HITS = 8;
+    private static final long SWITCH_WHILE_WAITING_MS = 20_000L;
+    private static int hitsAtLastProgress;
+    private static long waitingSince;
+    private static long lastWaitCheckAt;
     private static final AreaNavigator navigator = new AreaNavigator();
     private static final ClaimManager claims = new ClaimManager();
     private static RetryBudget budget = new RetryBudget(4, 1500L);
@@ -331,7 +336,7 @@ public final class DwarvenCommissionMacro {
             lastOverrideSeen = override;
             pausedUntil = now + INPUT_PAUSE_MS;
             pauseWork(client);
-            DwarvenLog.log("you moved the camera, pausing for " + INPUT_PAUSE_MS / 1000 + "s");
+            DwarvenLog.log("camera: manual mouse input detected, pausing for " + INPUT_PAUSE_MS / 1000 + "s");
         }
         lastOverrideSeen = override;
         return now < pausedUntil;
@@ -560,6 +565,8 @@ public final class DwarvenCommissionMacro {
             return;
         }
         fighter.start(client, combat.mobs());
+        hitsAtLastProgress = 0;
+        waitingSince = 0;
         lastProgress = current.progress();
         lastProgressAt = now;
         enter(Stage.FIGHT, "fighting for " + current.name());
@@ -580,19 +587,61 @@ public final class DwarvenCommissionMacro {
         }
         fighter.tick(client);
         if (current.progress() > lastProgress + 1e-6) {
+            DwarvenLog.log(String.format("combat: commission progress confirmed: %.0f%% -> %.0f%%", lastProgress * 100, current.progress() * 100));
             lastProgress = current.progress();
             lastProgressAt = now;
+            hitsAtLastProgress = fighter.hits();
             budget.succeeded(Failure.NO_ORE);
         }
-        boolean stalled = now - lastProgressAt > FIGHT_STALL_MS;
+        // waiting out a respawn isn't a stall; swinging for a long time with nothing to show for it is
+        boolean stalled = now - lastProgressAt > FIGHT_STALL_MS && fighter.hits() - hitsAtLastProgress >= FIGHT_STALL_HITS;
+        if (fighter.outcome() == DwarvenFighter.Outcome.WAITING_FOR_RESPAWN) {
+            if (betterThanWaiting(client, now)) return;
+        } else {
+            waitingSince = 0;
+        }
         if (fighter.outcome() == DwarvenFighter.Outcome.NO_TARGETS || stalled) {
-            DwarvenLog.log((stalled ? "no progress on " + current.name() + " for " + FIGHT_STALL_MS / 1000 + "s"
+            DwarvenLog.log((stalled ? "hits on " + current.name() + " stopped counting for " + FIGHT_STALL_MS / 1000 + "s"
                     : "no mobs for " + current.name() + " around") + ", leaving it for " + AetherConfig.DWARVEN_REST_MINUTES.get() + " minutes");
             fighter.stop(client);
             skipped.put(current.name(), now + restMs());
             current = null;
             enter(Stage.OBSERVE, "giving this commission a rest");
         }
+    }
+
+    // while mobs respawn, another commission may be the better use of the time; the hunt itself stays eligible
+    private static boolean betterThanWaiting(Minecraft client, long now) {
+        if (waitingSince == 0) waitingSince = now;
+        if (now - waitingSince < SWITCH_WHILE_WAITING_MS || now - lastWaitCheckAt < SWITCH_WHILE_WAITING_MS) return false;
+        lastWaitCheckAt = now;
+        BlockPos feet = client.player.blockPosition();
+        List<DwarvenCommission> others = new ArrayList<>();
+        for (DwarvenCommission c : commissions) {
+            if (c.done() || c.name().equals(current.name()) || skipped.containsKey(c.name())) continue;
+            Objective o = Objective.of(c.name());
+            if (o.kind() == Objective.Kind.EVENT) continue;
+            if (o.kind() == Objective.Kind.MINING && o.area() != null && !DwarvenStore.AREAS.knows(o.area())) continue;
+            others.add(c);
+        }
+        CommissionScheduler.Choice other = CommissionScheduler.choose(others, rules(), null, o -> travelSeconds(o, feet, now),
+                c -> DwarvenStore.WORK.secondsFor(c.name()));
+        if (other == null) return false;
+        DwarvenLog.log("combat: no " + current.name() + " mobs for " + (now - waitingSince) / 1000 + "s, doing " + other.commission().name() + " meanwhile");
+        fighter.stop(client);
+        waitingSince = 0;
+        current = other.commission();
+        objective = other.objective();
+        triedSpots.clear();
+        goWork(client, now);
+        return true;
+    }
+
+    private static CommissionScheduler.Rules rules() {
+        return new CommissionScheduler.Rules(
+                CommissionScheduler.Strategy.values()[AetherConfig.DWARVEN_STRATEGY.get()], AetherConfig.DWARVEN_MITHRIL.get(),
+                AetherConfig.DWARVEN_TITANIUM.get(), AetherConfig.DWARVEN_AREA_MINING.get(), AetherConfig.DWARVEN_OVERLAP.get(),
+                AetherConfig.DWARVEN_SWITCH_GAIN.get(), AetherConfig.DWARVEN_COMBAT.get(), true);
     }
 
     private static void startMining(Minecraft client, long now) {
@@ -783,7 +832,7 @@ public final class DwarvenCommissionMacro {
             case CLAIM -> "claiming";
             case TRAVEL -> "travelling";
             case MINE -> "mining (" + miner.phase().name().toLowerCase().replace('_', ' ') + ")";
-            case FIGHT -> fighter.target() == null ? "fighting (looking)" : "fighting";
+            case FIGHT -> "fighting (" + fighter.phaseName() + ")";
             case WAIT -> "waiting";
         };
     }
