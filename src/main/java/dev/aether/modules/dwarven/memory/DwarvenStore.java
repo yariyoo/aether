@@ -23,6 +23,7 @@ public final class DwarvenStore {
     public static final dev.aether.modules.dwarven.claim.Emissaries EMISSARIES = new dev.aether.modules.dwarven.claim.Emissaries();
     public static final WorkStats WORK = new WorkStats(75.0);
     private static boolean loaded;
+    private static final String AREAS_VERSION = "@v2";
     private static boolean workDirty;
 
     private DwarvenStore() {}
@@ -32,7 +33,11 @@ public final class DwarvenStore {
         loaded = true;
         JsonObject o;
         if ((o = read("spots.json")) != null) SPOTS.load(o);
-        if ((o = read("areas.json")) != null) AREAS.load(o);
+        // zone cells saved before the seed was cleaned carry mislabelled spots; start those over from the clean seed
+        if ((o = read("areas.json")) != null) {
+            if (o.has(AREAS_VERSION)) AREAS.load(o);
+            else DwarvenLog.log("discarded zone cells learned from the old, mislabelled seed");
+        }
         if ((o = read("trails.json")) != null) TRAILS.load(o);
         if ((o = read("work.json")) != null) WORK.load(o);
         if ((o = read("spawns.json")) != null) SPAWNS.load(o);
@@ -78,6 +83,7 @@ public final class DwarvenStore {
                             h.get(1).getAsDouble(), h.get(2).getAsDouble(), h.get(3).getAsDouble(), h.get(4).getAsDouble(), h.get(5).getAsDouble()));
                 }
             }
+            AREAS.observe(AREAS_VERSION, net.minecraft.core.BlockPos.ZERO);
             // where /warp forge puts you, so the first warp of a fresh install is already planned for
             AREAS.observe(dev.aether.modules.dwarven.nav.AreaNavigator.FORGE_WARP, new net.minecraft.core.BlockPos(0, 149, -69));
             DwarvenLog.log("seeded " + areas.size() + " zones (" + cells + " cells) and fight spots from the bundled run");

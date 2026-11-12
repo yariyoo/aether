@@ -53,12 +53,20 @@ public final class AreaMemory {
     }
 
     public BlockPos nearestPoint(String area, BlockPos from) {
+        return nearestPoint(area, from, java.util.List.of(), 0);
+    }
+
+    // like nearestPoint, but skips anywhere within avoidRadius of a goal that already failed
+    public BlockPos nearestPoint(String area, BlockPos from, java.util.Collection<BlockPos> avoid, double avoidRadius) {
         Set<Long> seen = cells.get(key(area));
         if (seen == null || seen.isEmpty()) return null;
         BlockPos best = null;
         double bestDistance = Double.MAX_VALUE;
         for (long packed : seen) {
             BlockPos p = new BlockPos(BlockPos.getX(packed) * CELL + CELL / 2, BlockPos.getY(packed) * CELL, BlockPos.getZ(packed) * CELL + CELL / 2);
+            boolean nearFailure = false;
+            for (BlockPos a : avoid) if (a.distSqr(p) <= avoidRadius * avoidRadius) nearFailure = true;
+            if (nearFailure) continue;
             double d = p.distSqr(from);
             if (d < bestDistance) {
                 bestDistance = d;
@@ -66,6 +74,16 @@ public final class AreaMemory {
             }
         }
         return best;
+    }
+
+    // the scoreboard said this place is somewhere else: forget the cells around it for this area
+    public void reject(String area, BlockPos pos) {
+        Set<Long> seen = cells.get(key(area));
+        if (seen == null) return;
+        int cx = Math.floorDiv(pos.getX(), CELL), cy = Math.floorDiv(pos.getY(), CELL), cz = Math.floorDiv(pos.getZ(), CELL);
+        for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) {
+            if (seen.remove(BlockPos.asLong(cx + dx, cy + dy, cz + dz))) dirty = true;
+        }
     }
 
     public boolean dirty() {
