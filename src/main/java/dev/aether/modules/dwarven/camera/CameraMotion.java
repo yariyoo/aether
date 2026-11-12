@@ -2,8 +2,9 @@ package dev.aether.modules.dwarven.camera;
 
 // moves a view angle toward a target with bounded acceleration, carrying its speed from one target to the next
 public final class CameraMotion {
-    // a single step never covers more than this much time, so a lag spike can't fling the camera
-    private static final float MAX_STEP_SECONDS = 0.05f;
+    // motion is integrated in fixed slices so it comes out the same at any frame rate
+    private static final float SLICE_SECONDS = 1f / 240f;
+    private static final float SMOOTHING_REFERENCE_SECONDS = 1f / 60f;
     private static final float FULL_SPEED_ANGLE = 70f;
 
     private float yaw;
@@ -45,7 +46,7 @@ public final class CameraMotion {
         if (arrived) return;
         float left = Math.max(0f, seconds);
         while (left > 1e-5f && !arrived) {
-            float dt = Math.min(left, MAX_STEP_SECONDS);
+            float dt = Math.min(left, SLICE_SECONDS);
             integrate(dt);
             left -= dt;
         }
@@ -74,7 +75,8 @@ public final class CameraMotion {
             wantPitch += dirYaw * bend;
         }
 
-        float keep = profile.smoothing();
+        // smoothing is defined per sixtieth of a second and scaled to the slice actually taken
+        float keep = (float) Math.pow(profile.smoothing(), dt / SMOOTHING_REFERENCE_SECONDS);
         wantYaw = yawSpeed * keep + wantYaw * (1f - keep);
         wantPitch = pitchSpeed * keep + wantPitch * (1f - keep);
 
