@@ -14,6 +14,7 @@ import dev.aether.modules.dwarven.world.StandPlanner;
 import dev.aether.modules.dwarven.world.Vein;
 import dev.aether.modules.dwarven.world.VeinFinder;
 import dev.aether.modules.dwarven.world.WalkReach;
+import dev.aether.modules.dwarven.world.AimPoints;
 import dev.aether.modules.dwarven.diag.Ops;
 import dev.aether.modules.failsafe.FailsafeManager;
 import dev.aether.modules.pathfinding.PathfindingManager;
@@ -48,6 +49,7 @@ public final class DwarvenMiner {
     private static final int REGION_FAILS = 2;
     private boolean restartedDig;
     private boolean digStartSeen;
+    private long aimStartedAt;
     private String lastProblem;
     private Ops.Op walkOp;
     private final ApproachMemory approaches = new ApproachMemory();
@@ -76,6 +78,10 @@ public final class DwarvenMiner {
     private Outcome outcome = Outcome.RUNNING;
     private Set<OreKind> wanted = Set.of();
     private boolean preferTitanium;
+    private BlockEfficiency.Job job = new BlockEfficiency.Job(false, false, true);
+    // learned across commissions, since the tool and the ore don't change between them
+    private final BlockEfficiency efficiency = new BlockEfficiency();
+    private long lastBreakAt;
     private String area;
     private String zone = "";
     private long phaseSince;
@@ -141,9 +147,15 @@ public final class DwarvenMiner {
     }
 
     public void start(Minecraft client, Set<OreKind> wanted, boolean preferTitanium, String area) {
+        start(client, wanted, new BlockEfficiency.Job(preferTitanium, preferTitanium, true), area);
+    }
+
+    // job says what the commission counts, so a mithril commission doesn't spend its time on titanium
+    public void start(Minecraft client, Set<OreKind> wanted, BlockEfficiency.Job job, String area) {
         stop(client);
         this.wanted = wanted;
-        this.preferTitanium = preferTitanium;
+        this.job = job;
+        this.preferTitanium = job.titanium();
         this.area = area;
         this.outcome = Outcome.RUNNING;
         this.timeoutsInARow = 0;
@@ -152,7 +164,8 @@ public final class DwarvenMiner {
         this.spot = null;
         skip.clear();
         regionFails.clear();
-        DwarvenLog.log("miner: start, ore " + wanted + (area == null ? ", anywhere" : ", in " + area) + ", prefer titanium " + preferTitanium);
+        DwarvenLog.log("miner: start, ore " + wanted + (area == null ? ", anywhere" : ", in " + area) + ", " + (job.titanium() ? "titanium first"
+                : job.titaniumAlsoCounts() ? "mithril, titanium also counts" : "mithril only") + ", priority " + mode().name().toLowerCase());
         enter(Phase.PICK);
     }
 
@@ -279,13 +292,65 @@ public final class DwarvenMiner {
         target = choice.pos;
         targetKind = choice.kind;
         aimPoint = choice.point;
-        RotationManager.steer(client, aimPoint, DwarvenCamera.profile());
+        aimStartedAt = now;
+        RotationManager.steer(client, aimPoint, DwarvenCamera.profile(DwarvenCamera.Activity.MINING));
         enter(Phase.AIM);
     }
 
     private record Choice(BlockPos pos, OreKind kind, Vec3 point) {}
 
     private Choice choose(Minecraft client, OreWorld world) {
+        long t0 = System.nanoTime();
+        try {
+            return chooseInner(client, world);
+        } finally {
+            Ops.recordNanos("mine.select", System.nanoTime() - t0);
+        }
+    }
+
+    private BlockEfficiency.Mode mode() {
+        return BlockEfficiency.Mode.values()[Math.max(0, Math.min(BlockEfficiency.Mode.values().length - 1, AetherConfig.DWARVEN_MITHRIL_MODE.get()))];
+    }
+
+    private static Map<OreKind, Double> weights() {
+        Map<OreKind, Double> w = new java.util.EnumMap<>(OreKind.class);
+        w.put(OreKind.MITHRIL_GRAY, (double) AetherConfig.DWARVEN_GRAY_WEIGHT.get());
+        w.put(OreKind.MITHRIL_GREEN, (double) AetherConfig.DWARVEN_GREEN_WEIGHT.get());
+        w.put(OreKind.MITHRIL_BLUE, (double) AetherConfig.DWARVEN_BLUE_WEIGHT.get());
+        w.put(OreKind.TITANIUM, 1.0);
+        return w;
+    }
+
+    // how fast the mining camera turns, used to price the turn toward a block
+    private static double turnSpeedNow() {
+        return Math.max(30.0, DwarvenCamera.profile(DwarvenCamera.Activity.MINING).maxSpeed() * 0.5);
+    }
+
+    private double turnSpeed = 200.0;
+
+    // what one stand is worth: the useful ore in reach, each block counted by how much it advances the job per second
+    private double standValue(OreWorld world, StandPlanner.Stand stand) {
+        if (!AetherConfig.DWARVEN_COMMISSION_AWARE.get() || !AetherConfig.DWARVEN_CLUSTER_MINING.get()) {
+            return stand.reachable().size() + (preferTitanium ? TITANIUM_WEIGHT * stand.titanium() : 0);
+        }
+        boolean learning = AetherConfig.DWARVEN_BLOCK_LEARNING.get();
+        double perSecond = 0;
+        for (BlockPos p : stand.reachable()) {
+            OreKind k = world.oreAt(p);
+            if (k == null || !wanted.contains(k)) continue;
+            perSecond += efficiency.contribution(k, job) * 1000.0 / efficiency.breakMs(k, learning);
+        }
+        // scaled so a stand full of plain mithril scores about what its block count used to
+        return perSecond * efficiency.breakMs(OreKind.MITHRIL_GRAY, learning) / 1000.0;
+    }
+
+    // one seed per game session, so a block's aim spot stays put but differs between sessions
+    private static final long AIM_SEED = System.nanoTime();
+    private double aimVariation;
+
+    private Choice chooseInner(Minecraft client, OreWorld world) {
+        turnSpeed = turnSpeedNow();
+        aimVariation = AetherConfig.DWARVEN_CAM_VARIATION_ON.get() ? AetherConfig.DWARVEN_AIM_VARIATION.get() : 0.0;
         Vec3 eye = client.player.getEyePosition();
         Vec3 look = client.player.getLookAngle();
         double reach = client.player.blockInteractionRange();
@@ -295,13 +360,21 @@ public final class DwarvenMiner {
         for (BlockPos p : BlockPos.betweenClosed(centre.offset(-SCAN, -SCAN, -SCAN), centre.offset(SCAN, SCAN, SCAN))) {
             OreKind kind = world.oreAt(p);
             if (kind == null || !wanted.contains(kind) || skip.containsKey(p)) continue;
-            Vec3 point = StandPlanner.visiblePoint(world, eye, p, reach);
+            Vec3 point = AimPoints.pick(world, eye, p, reach, aimVariation, AIM_SEED);
             if (point == null) continue;
             Vec3 to = point.subtract(eye);
             double angle = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, to.normalize().dot(look)))));
-            // turning costs time, so nearby in view wins; titanium jumps the queue when it is what we're after
-            double cost = angle + to.length() * 4.0;
-            if (kind == OreKind.TITANIUM && preferTitanium) cost -= 1000.0;
+            double cost;
+            if (AetherConfig.DWARVEN_COMMISSION_AWARE.get()) {
+                // the time this block costs per unit of commission progress: turning to it plus breaking it
+                double aimMs = angle / turnSpeed * 1000.0;
+                cost = efficiency.cost(kind, job, mode(), aimMs, to.length() * 20.0, AetherConfig.DWARVEN_BLOCK_LEARNING.get(), weights());
+                if (cost == Double.MAX_VALUE) continue;
+            } else {
+                // turning costs time, so nearby in view wins; titanium jumps the queue when it is what we're after
+                cost = angle + to.length() * 4.0;
+                if (kind == OreKind.TITANIUM && preferTitanium) cost -= 1000.0;
+            }
             if (cost < bestCost) {
                 bestCost = cost;
                 best = new Choice(p.immutable(), kind, point);
@@ -316,6 +389,9 @@ public final class DwarvenMiner {
             return;
         }
         if (crosshairOn(client, target)) {
+            // the dig starts as soon as the ray is on the block; the last fraction of a degree isn't waited for
+            if (aimStartedAt > 0) Ops.record("rot.mine", now - aimStartedAt);
+            aimStartedAt = 0;
             // the macro input also tells the game to keep digging when the window doesn't have the mouse captured
             MacroInput.setAttack(client.options.keyAttack, true);
             restartedDig = false;
@@ -336,7 +412,7 @@ public final class DwarvenMiner {
                 return;
             }
             aimPoint = point;
-            RotationManager.steer(client, aimPoint, DwarvenCamera.profile());
+            RotationManager.steer(client, aimPoint, DwarvenCamera.profile(DwarvenCamera.Activity.MINING));
         }
     }
 
@@ -352,7 +428,9 @@ public final class DwarvenMiner {
         OreKind nowKind = world.oreAt(target);
         if (nowKind != targetKind) {
             recordBreak(now);
-            if (nowKind != null && wanted.contains(nowKind)) {
+            if (nowKind == OreKind.TITANIUM && targetKind.isMithril()) efficiency.titaniumSpawned();
+            boolean counts = !AetherConfig.DWARVEN_COMMISSION_AWARE.get() || efficiency.contribution(nowKind == null ? targetKind : nowKind, job) > 0;
+            if (nowKind != null && wanted.contains(nowKind) && counts) {
                 // the block changed into another ore we want (mithril turning into titanium) and is still solid
                 DwarvenLog.log("miner: " + targetKind + " at " + target.toShortString() + " became " + nowKind + ", mining it too");
                 targetKind = nowKind;
@@ -423,6 +501,10 @@ public final class DwarvenMiner {
     private void recordBreak(long now) {
         long took = now - phaseSince;
         Ops.record("mine.break", took);
+        Ops.record("mine.break." + targetKind.name().toLowerCase(), took);
+        if (lastBreakAt > 0 && now - lastBreakAt < 30_000) Ops.record("mine.between", now - lastBreakAt);
+        lastBreakAt = now;
+        efficiency.broke(targetKind, took);
         mined++;
         timeoutsInARow = 0;
         moveFailures = 0;
@@ -476,6 +558,7 @@ public final class DwarvenMiner {
         Set<BlockPos> walkable = checkWalk ? WalkReach.from(world, feet, WALK_CHECK_RADIUS, WALK_CHECK_NODES) : Set.of();
         // a tiny flood means we're on blocks the check can't model (a slab, a ledge edge); then it isn't trusted
         boolean trustWalk = walkable.size() >= WALK_CHECK_MIN;
+        long t0 = System.nanoTime();
         StandPlanner.Stand best = pickStand(world, veins, ore, reach, feet, trustWalk ? walkable : null);
         if (best == null && trustWalk) {
             // nothing passed the walk check; the old behaviour of trying the best stand anyway beats giving up
@@ -485,6 +568,7 @@ public final class DwarvenMiner {
             DwarvenLog.log("miner: skipped " + rejectedUnwalkable + " stands there's no walk to from here");
         }
         if (rejectedApproach > 0) DwarvenLog.log("miner: skipped " + rejectedApproach + " stands behind a spot a walk already got stuck at");
+        Ops.recordNanos("mine.stand.select", System.nanoTime() - t0);
         planMoveDone(client, world, now, feet, ore, veins, best);
     }
 
@@ -510,7 +594,8 @@ public final class DwarvenMiner {
                     rejectedApproach++;
                     continue;
                 }
-                double value = stand.reachable().size() + (preferTitanium ? TITANIUM_WEIGHT * stand.titanium() : 0);
+                double value = standValue(world, stand);
+                if (value <= 0) continue;
                 SpotMemory.Spot known = AetherConfig.DWARVEN_VEIN_MEMORY.get() ? DwarvenStore.SPOTS.at(stand.feet()) : null;
                 // spots that paid off before get the benefit of the doubt, ones that didn't lose it
                 if (known != null) value *= Math.max(0.5, Math.min(2.0, known.rate(PRIOR_RATE) / PRIOR_RATE));
@@ -551,8 +636,10 @@ public final class DwarvenMiner {
         startWalk(client, best.feet(), now);
     }
 
+    // titanium only adds to a vein's worth when the job counts it
     private double veinScore(Vein vein, BlockPos feet) {
-        double value = vein.size() + (preferTitanium ? TITANIUM_WEIGHT * vein.titanium() : 0);
+        boolean titaniumCounts = !AetherConfig.DWARVEN_COMMISSION_AWARE.get() ? preferTitanium : job.titanium() || job.titaniumAlsoCounts();
+        double value = vein.size() + (titaniumCounts ? TITANIUM_WEIGHT * vein.titanium() : 0);
         return value / (10.0 + Math.sqrt(vein.centre().distSqr(feet)));
     }
 

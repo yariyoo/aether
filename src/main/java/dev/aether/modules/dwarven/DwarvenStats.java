@@ -14,6 +14,7 @@ public final class DwarvenStats {
     private long travelMsTotal;
     private int kills;
     private int wrongAreas;
+    private double progress;
     private long fightMs;
 
     public synchronized void reset() {
@@ -26,6 +27,7 @@ public final class DwarvenStats {
         travelMsTotal = 0;
         kills = 0;
         wrongAreas = 0;
+        progress = 0;
         fightMs = 0;
     }
 
@@ -48,6 +50,15 @@ public final class DwarvenStats {
     public synchronized void trip(boolean arrived) {
         trips++;
         if (arrived) tripsArrived++;
+    }
+
+    public synchronized void progress(double fraction) {
+        if (fraction > 0 && fraction < 1.01) progress += fraction;
+    }
+
+    // summed commission progress, where 1.0 is one whole commission
+    public synchronized double progressTotal() {
+        return progress;
     }
 
     public synchronized void wrongArea() {

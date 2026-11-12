@@ -23,6 +23,7 @@ import dev.aether.modules.dwarven.memory.AreaMemory;
 import dev.aether.modules.dwarven.memory.DwarvenStore;
 import dev.aether.modules.dwarven.memory.HuntPoints;
 import dev.aether.modules.dwarven.memory.SpotMemory;
+import dev.aether.modules.dwarven.mine.BlockEfficiency;
 import dev.aether.modules.dwarven.mine.DwarvenMiner;
 import dev.aether.modules.dwarven.nav.AreaNavigator;
 import dev.aether.modules.dwarven.nav.NavFailures;
@@ -359,6 +360,8 @@ public final class DwarvenCommissionMacro {
         if (stage == Stage.WAIT) Ops.record("recovery.wait", spent);
         if (stage != Stage.OFF) Ops.record("stage." + stage.name().toLowerCase(Locale.ROOT), spent);
         Diag.event(Diag.STATE, stage + " -> " + next + " (" + why + ") after " + spent + "ms in " + stage, spent);
+        // each stage's subsystem owns the camera; a turn the last one started must not carry into the next
+        if (stage != next && RotationManager.isRotating()) RotationManager.cancelRotation();
         if (stage != next) DwarvenLog.log(stage + " -> " + next + " (" + why + ")");
         stage = next;
         stageSince = now;
@@ -776,6 +779,7 @@ public final class DwarvenCommissionMacro {
             return;
         }
         if (current.progress() > lastProgress + 1e-6) {
+            STATS.progress(current.progress() - lastProgress);
             fighter.progressed(now);
             DwarvenLog.log(String.format("combat: commission progress confirmed: %.0f%% -> %.0f%%", lastProgress * 100, current.progress() * 100));
             lastProgress = current.progress();
@@ -837,10 +841,31 @@ public final class DwarvenCommissionMacro {
     private static void startMining(Minecraft client, long now) {
         Set<OreKind> wanted = EnumSet.of(OreKind.MITHRIL_GRAY, OreKind.MITHRIL_GREEN, OreKind.MITHRIL_BLUE);
         boolean titaniumJob = objective.ore() == Objective.Ore.TITANIUM;
-        // titanium appears where mithril is mined, so a titanium job digs mithril until some shows up
-        if (titaniumJob || AetherConfig.DWARVEN_TITANIUM_PRIORITY.get()) wanted.add(OreKind.TITANIUM);
-        if (titaniumJob && !AetherConfig.DWARVEN_MITHRIL_FOR_TITANIUM.get()) wanted = EnumSet.of(OreKind.TITANIUM);
-        miner.start(client, wanted, titaniumJob || AetherConfig.DWARVEN_TITANIUM_PRIORITY.get(), objective.area());
+        if (!AetherConfig.DWARVEN_COMMISSION_AWARE.get()) {
+            // titanium appears where mithril is mined, so a titanium job digs mithril until some shows up
+            if (titaniumJob || AetherConfig.DWARVEN_TITANIUM_PRIORITY.get()) wanted.add(OreKind.TITANIUM);
+            if (titaniumJob && !AetherConfig.DWARVEN_MITHRIL_FOR_TITANIUM.get()) wanted = EnumSet.of(OreKind.TITANIUM);
+            miner.start(client, wanted, titaniumJob || AetherConfig.DWARVEN_TITANIUM_PRIORITY.get(), objective.area());
+        } else {
+            // a mithril job only spends time on titanium when something counts it: another open titanium commission
+            // here, or the user asking for it
+            boolean otherTitanium = false;
+            for (DwarvenCommission c : commissions) {
+                if (c.done() || c.name().equals(current.name())) continue;
+                Objective o = Objective.of(c.name());
+                if (o.kind() == Objective.Kind.MINING && o.ore() == Objective.Ore.TITANIUM
+                        && (o.area() == null || o.area().equalsIgnoreCase(objective.area()))) otherTitanium = true;
+            }
+            boolean titaniumCounts = titaniumJob || otherTitanium || !AetherConfig.DWARVEN_AVOID_TITANIUM_IN_MITHRIL.get();
+            if (titaniumCounts) wanted.add(OreKind.TITANIUM);
+            boolean mithrilForTitanium = AetherConfig.DWARVEN_MITHRIL_FOR_TITANIUM.get();
+            if (titaniumJob && !mithrilForTitanium) wanted = EnumSet.of(OreKind.TITANIUM);
+            // titanium first off: every ore the job can use counts the same, nearest first
+            BlockEfficiency.Job job = titaniumJob && !AetherConfig.DWARVEN_TITANIUM_PRIORITY.get()
+                    ? new BlockEfficiency.Job(false, true, true) : new BlockEfficiency.Job(titaniumJob, titaniumCounts, mithrilForTitanium);
+            if (otherTitanium && !titaniumJob) DwarvenLog.log("miner: an open titanium commission here also counts titanium, so it's mined too");
+            miner.start(client, wanted, job, objective.area());
+        }
         mineStartedAt = now;
         mineStartProgress = current.progress();
         lastProgress = current.progress();
@@ -907,6 +932,7 @@ public final class DwarvenCommissionMacro {
         miner.zone(ZONE.fresh(now) ? zone : "");
         miner.tick(client);
         if (current.progress() > lastProgress + 1e-6) {
+            STATS.progress(current.progress() - lastProgress);
             lastProgress = current.progress();
             lastProgressAt = now;
             minedAtLastProgress = miner.mined();
@@ -1201,8 +1227,9 @@ public final class DwarvenCommissionMacro {
     private static String sessionLine() {
         long ms = sessionMs();
         double hours = ms / 3_600_000.0;
-        return String.format("session %.1f min, %d commissions (%.1f/h), %d wrong-area arrivals, average commission %.0fs%n", ms / 60000.0,
-                completed, hours > 0 ? completed / hours : 0, STATS.wrongAreas(), STATS.averageCommissionMs() / 1000.0);
+        return String.format("session %.1f min, %d commissions (%.1f/h), %d wrong-area arrivals, average commission %.0fs, %.1f%% commission progress per minute%n",
+                ms / 60000.0, completed, hours > 0 ? completed / hours : 0, STATS.wrongAreas(), STATS.averageCommissionMs() / 1000.0,
+                ms > 0 ? STATS.progressTotal() * 100 / (ms / 60000.0) : 0);
     }
 
     // writes the ring buffer and the report to a file of its own; works with diagnostics off too, minus the event history
