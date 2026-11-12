@@ -86,6 +86,11 @@ public class RotationManager {
         isRotating = !steerMotion.arrived();
     }
 
+    // read-only, for diagnostics: where the camera is being turned to, or null when nothing is turning it
+    public static RotationUtils.Rotation targetRotation() {
+        return isRotating ? targetRot : null;
+    }
+
     public static float steerRemainingDegrees() {
         return steerMode && isRotating ? steerMotion.remaining() : 0.0f;
     }

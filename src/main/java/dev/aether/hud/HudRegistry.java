@@ -74,6 +74,7 @@ public class HudRegistry {
                 hudAlpha = 0f;
                 return;
             }
+            dev.aether.modules.dwarven.DwarvenCommissionMacro.onFrame(mc);
 
             // Let the edit screen render its own elements
             if (mc.gui.screen() instanceof HudEditScreen) return;
