@@ -496,7 +496,8 @@ public final class DwarvenCommissionMacro {
             return;
         }
         if (DwarvenFighter.weaponSlot(client) < 0) {
-            DwarvenLog.log("no weapon found in the hotbar, fighting with whatever is held");
+            halt(client, "no drill, pickaxe or gauntlet in the hotbar to fight with");
+            return;
         }
         fighter.start(client, combat.mobs());
         lastProgress = current.progress();

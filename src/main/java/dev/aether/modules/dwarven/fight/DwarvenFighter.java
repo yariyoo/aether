@@ -11,13 +11,10 @@ import dev.aether.util.ClientUtils;
 import dev.aether.util.TablistUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.decoration.ArmorStand;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.component.ItemLore;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
@@ -48,8 +45,6 @@ public final class DwarvenFighter {
     private static final long IGNORE_TARGET_MS = 15_000L;
     private static final long ROAM_POINT_RECHECK_MS = 60_000L;
     private static final int ROAM_POINTS_BEFORE_GIVING_UP = 4;
-    private static final String[] WEAPON_WORDS = {"hyperion", "astraea", "scylla", "valkyrie", "sword", "katana", "blade",
-            "dagger", "scythe", "cleaver", "axe", "bow"};
 
     private Phase phase = Phase.IDLE;
     private Outcome outcome = Outcome.RUNNING;
@@ -320,47 +315,8 @@ public final class DwarvenFighter {
         return new Tag(m.group(1).strip(), health);
     }
 
-    // the hotbar item with the highest damage stat, or anything that looks like a weapon
+    // commission mobs are fought with the mining tool, like a player doing commissions would
     public static int weaponSlot(Minecraft client) {
-        int best = -1;
-        double bestDamage = -1;
-        int named = -1;
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = client.player.getInventory().getItem(i);
-            if (stack.isEmpty()) continue;
-            double damage = damageOf(stack);
-            if (damage > bestDamage) {
-                bestDamage = damage;
-                best = i;
-            }
-            if (named < 0) {
-                String name = stack.getHoverName().getString().toLowerCase(Locale.ROOT);
-                for (String w : WEAPON_WORDS) {
-                    if (name.contains(w)) {
-                        named = i;
-                        break;
-                    }
-                }
-            }
-        }
-        return bestDamage > 0 ? best : named;
-    }
-
-    private static final Pattern DAMAGE = Pattern.compile("^Damage: \\+([\\d,.]+)");
-
-    private static double damageOf(ItemStack stack) {
-        ItemLore lore = stack.get(DataComponents.LORE);
-        if (lore == null) return 0;
-        for (Component line : lore.lines()) {
-            Matcher m = DAMAGE.matcher(TablistUtils.stripColors(line.getString()).strip());
-            if (m.find()) {
-                try {
-                    return Double.parseDouble(m.group(1).replace(",", ""));
-                } catch (NumberFormatException ignored) {
-                    return 0;
-                }
-            }
-        }
-        return 0;
+        return dev.aether.modules.dwarven.mine.DwarvenMiner.toolSlot(client);
     }
 }
