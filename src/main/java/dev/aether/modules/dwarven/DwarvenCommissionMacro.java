@@ -12,6 +12,7 @@ import dev.aether.modules.dwarven.commission.DwarvenCommission;
 import dev.aether.modules.dwarven.commission.Objective;
 import dev.aether.modules.dwarven.event.GoblinRaid;
 import dev.aether.modules.dwarven.fight.DwarvenFighter;
+import dev.aether.modules.dwarven.fight.Weapons;
 import dev.aether.modules.dwarven.memory.DwarvenStore;
 import dev.aether.modules.dwarven.memory.HuntPoints;
 import dev.aether.modules.dwarven.memory.SpotMemory;
@@ -299,6 +300,7 @@ public final class DwarvenCommissionMacro {
         current = null;
         objective = null;
         completed = 0;
+        STATS.reset();
         rewards = dev.aether.modules.dwarven.claim.Rewards.NONE;
         minedBeforeThisRun = miner.mined();
         titaniumBeforeThisRun = miner.titaniumMined();
@@ -313,10 +315,15 @@ public final class DwarvenCommissionMacro {
     }
 
     private static void enter(Stage next, String why) {
+        long now = System.currentTimeMillis();
+        if (stage != Stage.OFF && stageSince > 0) STATS.stageTime(stage, now - stageSince);
         if (stage != next) DwarvenLog.log(stage + " -> " + next + " (" + why + ")");
         stage = next;
-        stageSince = System.currentTimeMillis();
+        stageSince = now;
     }
+
+    public static final DwarvenStats STATS = new DwarvenStats();
+    private static long commissionSince;
 
     private static String unsafe(Minecraft client, boolean inMines, long now) {
         if (client.player.isDeadOrDying() || client.gui.screen() instanceof DeathScreen) return "you died";
@@ -392,6 +399,7 @@ public final class DwarvenCommissionMacro {
                 unknown.add(o.area());
                 continue;
             }
+            if (isGoblinSlayer(c.name()) && !AetherConfig.DWARVEN_GOBLIN_SLAYER.get()) continue;
             open.add(c);
         }
         CommissionScheduler.Rules rules = new CommissionScheduler.Rules(
@@ -424,6 +432,7 @@ public final class DwarvenCommissionMacro {
         current = choice.commission();
         objective = choice.objective();
         if (changed) {
+            commissionSince = now;
             triedSpots.clear();
             DwarvenLog.log(String.format("chose %s (%.0f%%), about %.0fs%s; all: %s", current.name(), current.progress() * 100, choice.seconds(),
                     choice.alsoAdvanced().isEmpty() ? "" : ", also advances " + choice.alsoAdvanced().stream().map(DwarvenCommission::name).toList(),
@@ -463,7 +472,12 @@ public final class DwarvenCommissionMacro {
     }
 
     private static boolean wrongZone(Objective o) {
-        return o.kind() == Objective.Kind.MINING && o.area() != null && !zone.isEmpty() && !zone.equalsIgnoreCase(o.area());
+        boolean placed = o.kind() == Objective.Kind.MINING || o.kind() == Objective.Kind.COMBAT;
+        return placed && o.area() != null && !zone.isEmpty() && !zone.equalsIgnoreCase(o.area());
+    }
+
+    private static boolean isGoblinSlayer(String name) {
+        return name.strip().equalsIgnoreCase("Goblin Slayer");
     }
 
     private static boolean raidHere(Minecraft client) {
@@ -484,7 +498,12 @@ public final class DwarvenCommissionMacro {
     private static BlockPos destination(Objective o, BlockPos feet, long now) {
         if (o.kind() == Objective.Kind.COMBAT) {
             CombatTarget combat = current == null ? null : CombatTarget.of(current.name());
-            BlockPos hunt = combat == null ? null : HuntPoints.nearest(combat.mobs(), feet);
+            if (combat == null) return o.area() == null ? null : DwarvenStore.AREAS.nearestPoint(o.area(), feet);
+            // a recorded fight spot only counts if it lies in the commission's area; a raid elsewhere leaves misleading ones
+            java.util.function.Predicate<BlockPos> inIt = p -> DwarvenStore.AREAS.allows(combat.area(), p);
+            BlockPos busiest = DwarvenStore.SPAWNS.best(combat.mobs(), feet, now, 0L, Set.of(), inIt);
+            if (busiest != null) return busiest;
+            BlockPos hunt = HuntPoints.nearest(combat.mobs(), feet, inIt);
             if (hunt != null) return hunt;
             return o.area() == null ? null : DwarvenStore.AREAS.nearestPoint(o.area(), feet);
         }
@@ -501,9 +520,10 @@ public final class DwarvenCommissionMacro {
 
     private static boolean inArea(Objective o, BlockPos feet) {
         if (o.kind() == Objective.Kind.COMBAT) {
-            if (o.area() != null && zone.equalsIgnoreCase(o.area())) return true;
+            if (o.area() != null && !zone.isEmpty()) return zone.equalsIgnoreCase(o.area());
             CombatTarget combat = CombatTarget.of(current.name());
-            BlockPos hunt = combat == null ? null : HuntPoints.nearest(combat.mobs(), feet);
+            if (combat == null) return false;
+            BlockPos hunt = HuntPoints.nearest(combat.mobs(), feet, p -> DwarvenStore.AREAS.allows(combat.area(), p));
             return hunt != null && Math.sqrt(hunt.distSqr(feet)) < NEAR_HUNT_POINT;
         }
         if (o.area() == null) return true;
@@ -518,6 +538,15 @@ public final class DwarvenCommissionMacro {
         }
         BlockPos target = destination(objective, feet, now);
         if (target == null) {
+            if (objective.area() != null && objective.kind() != Objective.Kind.EVENT) {
+                // working here wouldn't count, and there's nowhere known to go; rest it instead of mining the wrong area
+                skipped.put(current.name(), now + restMs());
+                lastFailure.put(current.name(), "no known place in " + objective.area() + " to go to");
+                DwarvenLog.log("no known way into " + objective.area() + " for " + current.name() + "; resting it");
+                current = null;
+                enter(Stage.OBSERVE, "nowhere known to go");
+                return;
+            }
             startWork(client, now);
             return;
         }
@@ -539,6 +568,12 @@ public final class DwarvenCommissionMacro {
                     + "; forgetting that point and picking another");
             DwarvenStore.AREAS.reject(objective.area(), feet);
             NavFailures.record(navigator.goal(), feet, "wrong area", now);
+            if (objective.kind() == Objective.Kind.COMBAT) {
+                // the fight spot that brought us here is not in the hunt's area; forget it so it isn't picked again
+                CombatTarget combat = CombatTarget.of(current.name());
+                HuntPoints.forget(navigator.goal(), 8);
+                if (combat != null) DwarvenStore.SPAWNS.forget(navigator.goal(), combat.mobs(), 8);
+            }
             RetryBudget.Verdict v = budget.fail(Failure.WRONG_AREA);
             if (!v.retry()) {
                 budget.succeeded(Failure.WRONG_AREA);
@@ -552,12 +587,14 @@ public final class DwarvenCommissionMacro {
         }
         if (there) {
             navigator.stop(client);
+            STATS.trip(true);
             budget.succeeded(Failure.NAVIGATION);
             budget.succeeded(Failure.WRONG_AREA);
             startWork(client, now);
             return;
         }
         if (navigator.status() == AreaNavigator.Status.FAILED) {
+            STATS.trip(false);
             RetryBudget.Verdict v = budget.fail(Failure.NAVIGATION);
             triedSpots.add(navigator.goal());
             if (!v.retry()) {
@@ -596,11 +633,19 @@ public final class DwarvenCommissionMacro {
             enter(Stage.OBSERVE, "unknown combat commission");
             return;
         }
-        if (DwarvenFighter.weaponSlot(client) < 0) {
-            halt(client, "no drill, pickaxe or gauntlet in the hotbar to fight with");
+        boolean auto = isGoblinSlayer(current.name());
+        fighter.start(client, combat.mobs(), combat.area(), auto);
+        Weapons.Choice w = fighter.chooseWeapon(client, now);
+        if (w.kind() == null) {
+            // other commissions may still be doable, so this one is rested rather than stopping everything
+            fighter.stop(client);
+            skipped.put(current.name(), now + restMs());
+            lastFailure.put(current.name(), w.reason());
+            DwarvenLog.log("combat: " + w.reason() + "; leaving " + current.name() + " for " + AetherConfig.DWARVEN_REST_MINUTES.get() + " minutes");
+            current = null;
+            enter(Stage.OBSERVE, "no weapon");
             return;
         }
-        fighter.start(client, combat.mobs());
         hitsAtLastProgress = 0;
         waitingSince = 0;
         lastProgress = current.progress();
@@ -621,8 +666,33 @@ public final class DwarvenCommissionMacro {
             enter(Stage.OBSERVE, "raid over");
             return;
         }
+        if (wrongZone(objective)) {
+            if (wrongZoneSince == 0) wrongZoneSince = now;
+            if (now - wrongZoneSince > WRONG_ZONE_MS) {
+                wrongZoneSince = 0;
+                DwarvenLog.log("combat: " + client.player.blockPosition().toShortString() + " is in " + zone + ", not " + objective.area()
+                        + "; kills here wouldn't count, heading back in");
+                fighter.stop(client);
+                goWork(client, now);
+                return;
+            }
+        } else {
+            wrongZoneSince = 0;
+        }
+        fighter.zone(zone);
         fighter.tick(client);
+        if (fighter.outcome() == DwarvenFighter.Outcome.NO_WEAPON) {
+            String why = fighter.weapon() == null ? "no usable combat equipment" : fighter.weapon().reason();
+            fighter.stop(client);
+            skipped.put(current.name(), now + restMs());
+            lastFailure.put(current.name(), why);
+            DwarvenLog.log("combat: " + why + "; leaving " + current.name() + " for " + AetherConfig.DWARVEN_REST_MINUTES.get() + " minutes");
+            current = null;
+            enter(Stage.OBSERVE, "no weapon");
+            return;
+        }
         if (current.progress() > lastProgress + 1e-6) {
+            fighter.progressed(now);
             DwarvenLog.log(String.format("combat: commission progress confirmed: %.0f%% -> %.0f%%", lastProgress * 100, current.progress() * 100));
             lastProgress = current.progress();
             lastProgressAt = now;
@@ -712,6 +782,12 @@ public final class DwarvenCommissionMacro {
             DwarvenStore.workChanged();
         }
         DwarvenLog.log(current.name() + (mine == null ? " is gone from the list" : " is DONE") + String.format(" after %.0fs", (now - stageSince) / 1000.0));
+        if (mine != null && commissionSince > 0) {
+            STATS.commissionDone(now - commissionSince);
+            DwarvenLog.log(String.format("stats: %s took %.0fs from choosing it; session average %.0fs, travel %.0fs per commission",
+                    current.name(), (now - commissionSince) / 1000.0, STATS.averageCommissionMs() / 1000.0, STATS.averageTravelMs() / 1000.0));
+        }
+        commissionSince = 0;
         current = null;
         enter(Stage.OBSERVE, "commission finished");
         return true;
@@ -914,6 +990,16 @@ public final class DwarvenCommissionMacro {
 
     public static long sessionMs() {
         return stage == Stage.OFF ? 0 : System.currentTimeMillis() - sessionStartedAt;
+    }
+
+    public static String hudWeapon() {
+        Weapons.Choice w = fighter.weapon();
+        if (w == null) return null;
+        return (w.kind() == null ? "none" : w.name()) + ": " + w.reason();
+    }
+
+    public static double planningMs() {
+        return navigator.planningNanos() / 1e6;
     }
 
     public static int completed() {

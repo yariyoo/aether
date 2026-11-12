@@ -25,7 +25,13 @@ public class DwarvenHudElement extends HudElement {
     @Override public void    savePosition()   { AetherConfig.save(); }
 
     private static int rows() {
-        return 7 + (AetherConfig.DWARVEN_HUD_STATS.get() ? 3 : 0) + (AetherConfig.DWARVEN_HUD_DEBUG.get() ? 3 : 0);
+        return 7 + (AetherConfig.DWARVEN_HUD_STATS.get() ? 3 + statRows() : 0) + (AetherConfig.DWARVEN_HUD_DEBUG.get() ? 3 : 0);
+    }
+
+    // the panel grows only by the stat rows that have something to show
+    private static int statRows() {
+        var st = DwarvenCommissionMacro.STATS;
+        return 2 + (DwarvenCommissionMacro.completed() > 0 ? 1 : 0) + (st.kills() > 0 ? 1 : 0) + (DwarvenCommissionMacro.hudWeapon() != null ? 1 : 0);
     }
 
     @Override
@@ -58,6 +64,20 @@ public class DwarvenHudElement extends HudElement {
             var r = DwarvenCommissionMacro.rewards();
             String hotm = r.hotmExp() > 0 ? String.format(", %s HOTM", compact(r.hotmExp())) : "";
             y = row(nvg, y, "Powder", compact(r.mithrilPowder()) + (settled ? " (" + compact(r.mithrilPowder() / hours) + "/h)" : "") + hotm, Theme.HUD_VALUE);
+            var st = DwarvenCommissionMacro.STATS;
+            if (done > 0) {
+                y = row(nvg, y, "Per commission", time(st.averageCommissionMs()) + ", " + time(st.averageTravelMs()) + " travel", Theme.HUD_VALUE);
+            }
+            double nav = st.navigationSuccess();
+            y = row(nvg, y, "Navigation", nav < 0 ? "-" : String.format("%.0f%% of %d trips, %.0fms planning", nav * 100, st.trips(),
+                    DwarvenCommissionMacro.planningMs()), Theme.HUD_VALUE);
+            y = row(nvg, y, "Recovery", time(st.recoveryMs()), Theme.HUD_VALUE);
+            if (st.kills() > 0) {
+                double kpm = st.killsPerMinute();
+                y = row(nvg, y, "Kills", st.kills() + (kpm < 0 ? "" : String.format("  (%.1f/min)", kpm)), Theme.HUD_VALUE);
+            }
+            String weapon = DwarvenCommissionMacro.hudWeapon();
+            if (weapon != null) y = row(nvg, y, "Weapon", weapon, Theme.HUD_VALUE);
         }
         if (AetherConfig.DWARVEN_HUD_DEBUG.get()) {
             BlockPos target = DwarvenCommissionMacro.hudTarget();
