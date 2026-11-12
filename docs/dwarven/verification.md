@@ -21,15 +21,28 @@ confirmation, the pickaxe ability, the pathfinder legs, etherwarp legs, `/warp f
 the pigeon menu clicks, the scoreboard zone line, the settings page layout, the keybind and the HUD. How
 Aether's existing farming failsafes behave while this macro runs is also untested.
 
-## Known limits of the first version
+## Added since the first version
 
-- Area commissions are only taken for zones the player has stood in with Aether loaded; nothing is pre-seeded.
-- Long walks over ground never walked before go to the pathfinder in one request, which has stalled on long
-  routes before. Walking a route once by hand teaches it.
-- Royal Pigeon only. No Emissary claiming, combat, events, drill refuelling or HOTM XP tracking.
-- Settings from the brief left out because nothing real sits behind them yet: auto start and auto resume,
-  stop after HOTM XP, claim method, mining tool slot (found by name), pathfinder mode, max path length,
-  target-switch threshold for blocks, show mining path, HOTM XP per hour.
+- Combat commissions (Goblin Slayer, Glacite Walker Slayer, Treasure Hoarder Puncher, Star Sentry Puncher): mobs found by
+  their name tags and fought with the mining tool; spots to look are seeded from a recorded run.
+- Goblin Raid and Goblin Raid Slayer are joined only while a raid is running where the macro already is.
+- Claiming through the nearest remembered Emissary or the King when there is no pigeon (Claim Method setting).
+- Travel follows recorded walks and AOTV/etherwarp hops in short legs; zones, trails, hops and fight spots are seeded
+  from a recorded run of the maintainer's, then learned on top.
+- Settings: auto start, resume after leaving and coming back, tool name, progress check interval, rest time for a
+  failing commission, exploration range, walk length, stop on unknown area, claim method, events, HUD rows.
+- HUD: mining rate, titanium rate and blocks since the last titanium, powder earned per hour.
+- Tests: `LifecycleTests` (choose, work, claim, move on; events gated; teleport routes and saved trails), plus raid,
+  name tag, reward and zone-line parsing.
+
+## Known limits
+
+- Stop after X HOTM XP and HOTM XP per hour: the recorded claim rewards list Mithril Powder and Mining Exp, not HOTM
+  XP, so there is nothing reliable to count yet. The HUD shows HOTM XP only if a reward line names it.
+- Emissary and King name tags are matched by "Emissary" / "King ..."; not yet seen in a live run.
+- Raffle, Lucky Raffle, Elusive Goblin and powder events are recognised and skipped.
+- Settings from the brief still left out because nothing real sits behind them: pathfinder mode, sprint and jump
+  toggles, cluster mining toggle, block retry limit, target switch threshold, show mining path.
 
 ## Originality review
 
