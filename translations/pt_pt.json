@@ -842,5 +842,10 @@
   "text.aether.what_it_does_when_something_goes_wrong_and_what_it_shows": "What it does when something goes wrong, and what it shows",
   "text.aether.which_commissions_it_takes_and_how_it_chooses": "Which commissions it takes and how it chooses",
   "key.aether.dwarven_commissions": "Toggle Dwarven Commissions",
-  "text.aether.combat_commissions": "Combat Commissions"
+  "text.aether.combat_commissions": "Combat Commissions",
+  "text.aether.join_a_goblin_raid_running_nearby": "Join A Goblin Raid Running Nearby",
+  "text.aether.claim_method": "Claim Method",
+  "text.aether.pigeon_else_emissary": "Pigeon, Else Emissary",
+  "text.aether.royal_pigeon_only": "Royal Pigeon Only",
+  "text.aether.emissary_only": "Emissary Only"
 }
