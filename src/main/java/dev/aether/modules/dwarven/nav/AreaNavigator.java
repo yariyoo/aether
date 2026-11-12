@@ -107,6 +107,18 @@ public final class AreaNavigator {
     private int plans;
     private String mode = "IDLE";
     private long lastTripMs;
+    // a merged leg that fails turns merging off for the rest of the trip, so the original stops are walked again
+    private boolean simplifyOff;
+    private final Set<Integer> mergedLegs = new java.util.HashSet<>();
+    private Vec3 learnFrom;
+    private Vec3 lastLegPos;
+    private long learnArmedAt;
+    // a dynamic etherwarp leg's expected cost, before any have been timed: searching, lining up, the throw
+    private static final double DEFAULT_ETHER_LEG_SECONDS = 2.5;
+    // below this, walking is never worth handing to the etherwarp pathfinder
+    private static final double MIN_ETHER_LEG = 12.0;
+    // a teleport that failed costs about this much walking to recover from
+    private static final double FAILURE_COST_BLOCKS = 20.0;
 
     public long lastTripMs() {
         return lastTripMs;
@@ -162,6 +174,7 @@ public final class AreaNavigator {
         this.arriveWithin = arriveWithin;
         this.attempts = 0;
         this.replans = 0;
+        this.simplifyOff = false;
         this.steps = 0;
         this.warpTried = false;
         this.failure = null;
@@ -183,9 +196,12 @@ public final class AreaNavigator {
         planningNanos += took;
         Ops.recordNanos("nav.plan", took);
         // compare what each start is expected to cost in time: walking, each teleport at its measured cost, and the warp
-        double hereSeconds = fromHere.kind().reachesGoal() ? expectedSeconds(feet, fromHere) : walkSeconds(feet, goal);
-        double forgeSeconds = fromForge == null ? 0 : warpSeconds() + (fromForge.kind().reachesGoal() ? expectedSeconds(forge, fromForge)
-                : walkSeconds(forge, goal));
+        boolean intelligent = AetherConfig.DWARVEN_SMART_FORGE.get();
+        // the plain comparison is distance along known ground; the intelligent one prices each teleport and the warp
+        // at what they have measured, and counts a route's failure history
+        double hereSeconds = intelligent && fromHere.kind().reachesGoal() ? expectedSeconds(feet, fromHere) : walkSeconds(feet, goal);
+        double forgeSeconds = fromForge == null ? 0 : (intelligent ? warpSeconds() : WARP_OVERHEAD_SECONDS)
+                + (intelligent && fromForge.kind().reachesGoal() ? expectedSeconds(forge, fromForge) : walkSeconds(forge, goal));
         Diag.event(Diag.PATH, String.format("start options: from here %.1fs (%s), from the forge %.1fs (%s)", hereSeconds,
                 fromHere.kind(), forgeSeconds, fromForge == null ? "no forge" : fromForge.kind()), took / 1e6);
         RoutePlanner.Warp w = RoutePlanner.forgeDecision(AetherConfig.DWARVEN_FORGE_WARP.get(), forge, feet, AT_FORGE,
@@ -279,6 +295,25 @@ public final class AreaNavigator {
         partialRoute = !p.kind().reachesGoal();
         connection = p.attach() != null && p.attachDistance() > 4.0 ? p.attach() : null;
         legs = p.legs();
+        mergedLegs.clear();
+        if (AetherConfig.DWARVEN_ROUTE_SIMPLIFY.get() && !simplifyOff && legs.size() > 1) {
+            // a walk onto known ground stays its own leg, so a failure there still marks that join point unreachable
+            boolean keepFirst = connection != null && legs.get(0).pos().equals(connection);
+            List<Waypoint> merged = keepFirst ? new ArrayList<>(List.of(legs.get(0))) : new ArrayList<>();
+            merged.addAll(RoutePlanner.simplify(keepFirst ? connection : feet, keepFirst ? legs.subList(1, legs.size()) : legs,
+                    RoutePlanner.MERGE_SPAN, RoutePlanner.MERGE_CORRIDOR));
+            if (merged.size() < legs.size()) {
+                // remember which legs now stand for several, so a failure on one can fall back to the original stops
+                int at = 0;
+                for (int i = 0; i < merged.size(); i++) {
+                    int orig = legs.indexOf(merged.get(i));
+                    if (orig - at > 0) mergedLegs.add(i);
+                    at = orig + 1;
+                }
+                Diag.event(Diag.PATH, "route simplified from " + legs.size() + " to " + merged.size() + " legs");
+                legs = merged;
+            }
+        }
         legAt = 0;
         long hopCount = legs.stream().filter(w -> w.hop() != null).count();
         DwarvenLog.log(String.format("[NAV] route to %s at %s, %.0f blocks: %s, %d legs, %d teleports, about %.0fs (planned in %.1fms)", label,
@@ -293,8 +328,18 @@ public final class AreaNavigator {
         long nowMs = System.currentTimeMillis();
         boolean avoid = AetherConfig.DWARVEN_AVOID_FAILED_WAYPOINTS.get();
         double weight = AetherConfig.DWARVEN_ROUTE_RELIABILITY.get();
-        // each recent miss costs about as much as walking a few extra blocks
-        DwarvenStore.TRAILS.hopPenalty(h -> weight * HOP_MISS_COST * NavFailures.misses(h));
+        boolean learned = AetherConfig.DWARVEN_TELEPORT_OPTIMIZE.get();
+        boolean aotvFirst = AetherConfig.DWARVEN_PREFER_AOTV.get();
+        DwarvenStore.TRAILS.avoidStuck(AetherConfig.DWARVEN_STUCK_AVOIDANCE.get());
+        // each recent miss costs about as much as walking a few extra blocks; a teleport's whole history adds its
+        // failure rate times what a failure costs to recover from
+        DwarvenStore.TRAILS.hopPenalty(h -> {
+            double pen = weight * HOP_MISS_COST * NavFailures.misses(h);
+            TrailMemory.HopStats st = learned ? DwarvenStore.TRAILS.hopStats(h) : null;
+            if (st != null) pen += weight * st.failureRate() * FAILURE_COST_BLOCKS;
+            if (!aotvFirst && h.kind() == HopKind.AOTV) pen += Math.min(15.0, hopSeconds() * WALK_SPEED);
+            return pen;
+        });
         // only once a few teleports have been timed; until then the graph keeps its usual price for them
         if (Ops.summary("hop.aotv.exec").count() >= 3) DwarvenStore.TRAILS.hopCost(Math.min(15.0, hopSeconds() * WALK_SPEED));
         return RoutePlanner.plan(DwarvenStore.TRAILS, feet, goal, AetherConfig.DWARVEN_LEG_LENGTH.get(), hopKinds(client),
@@ -401,7 +446,11 @@ public final class AreaNavigator {
         double distance = Math.sqrt(feet.distSqr(to));
         boolean canEtherwarp = AetherConfig.DWARVEN_USE_ETHERWARP.get() && GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(client) >= 0;
         // alternate on retries so one broken mode can't block the trip
-        etherwarpLeg = canEtherwarp && distance >= ETHERWARP_MIN_DISTANCE && attempts % 2 == 0;
+        etherwarpLeg = canEtherwarp && attempts % 2 == 0 && etherwarpWorthIt(distance);
+        // the pathfinder turns the camera while walking; a steer left over from a teleport aim would fight it
+        if (RotationManager.isRotating()) RotationManager.cancelRotation();
+        learnFrom = null;
+        lastLegPos = client.player.position();
         AtomicInteger r = new AtomicInteger();
         result = r;
         best = distance;
@@ -421,10 +470,37 @@ public final class AreaNavigator {
         }
     }
 
+    // a walking leg is handed to the etherwarp pathfinder when that is expected to be quicker than walking it
+    private boolean etherwarpWorthIt(double distance) {
+        if (!AetherConfig.DWARVEN_PREFER_ETHERWARP.get() || !AetherConfig.DWARVEN_DYNAMIC_TELEPORTS.get()) return distance >= ETHERWARP_MIN_DISTANCE;
+        Ops.Summary ether = Ops.summary("nav.leg.ether");
+        double etherSeconds = ether.count() >= 3 ? ether.meanMs() / 1000.0 : DEFAULT_ETHER_LEG_SECONDS;
+        return RoutePlanner.etherwarpBeatsWalking(distance, MIN_ETHER_LEG, WALK_SPEED, pathStartSeconds(), etherSeconds);
+    }
+
+    // a teleport the etherwarp pathfinder made, seen as a jump between two ticks, becomes a known hop for next time
+    private void watchForTeleport(Minecraft client, long now) {
+        Vec3 pos = client.player.position();
+        if (lastLegPos != null && pos.distanceTo(lastLegPos) > 3.0) {
+            learnFrom = lastLegPos;
+            learnArmedAt = now;
+        }
+        lastLegPos = pos;
+        if (learnFrom != null && client.player.onGround() && now - learnArmedAt > 150) {
+            TrailMemory.Hop hop = new TrailMemory.Hop(HopKind.ETHERWARP, learnFrom.x, learnFrom.y, learnFrom.z, pos.x, pos.y, pos.z);
+            if (!DwarvenStore.TRAILS.knowsHop(hop)) {
+                DwarvenStore.TRAILS.learnHop(hop);
+                Diag.event(Diag.PATH, "learned an etherwarp from " + fmt(learnFrom) + " to " + fmt(pos));
+            }
+            learnFrom = null;
+        }
+    }
+
     public void tick(Minecraft client) {
         if (status != Status.RUNNING || client.player == null) return;
         long now = System.currentTimeMillis();
         BlockPos feet = client.player.blockPosition();
+        if (etherwarpLeg && !hopping && !warping && AetherConfig.DWARVEN_DYNAMIC_TELEPORTS.get()) watchForTeleport(client, now);
         if (warping) {
             tickWarp(client, feet, now);
             return;
@@ -462,8 +538,11 @@ public final class AreaNavigator {
                 legFailed(client, "stopped " + String.format("%.0f", left) + " blocks short");
                 return;
             }
-            if (result.get() != 1) PathfindingManager.stop();
-            if (legOp != null) legOp.end("reached");
+            // starting the next walk stops this one anyway; stopping first only adds a tick of standing still
+            boolean nextWalks = legAt + 1 < legs.size() && legs.get(legAt + 1).hop() == null;
+            if (result.get() != 1 && !(nextWalks && AetherConfig.DWARVEN_REDUCE_LEG_DELAY.get())) PathfindingManager.stop();
+            if (legOp != null) Ops.record(etherwarpLeg ? "nav.leg.ether" : "nav.leg.walk", legOp.end("reached"));
+            DwarvenStore.TRAILS.passed(to);
             legEndedAt = now;
             if (connection != null && to.equals(connection)) {
                 DwarvenLog.log("[NAV] reattached at " + to.toShortString() + ", continuing along the route");
@@ -503,9 +582,18 @@ public final class AreaNavigator {
         long now = System.currentTimeMillis();
         if (why.equals("stuck")) Ops.record("nav.stuck", now - progressAt);
         if (legOp != null) legOp.end("failed: " + why);
+        Ops.record("nav.fail", 0);
         legEndedAt = now;
         Diag.event(Diag.RECOVERY, "leg " + (legAt + 1) + " failed (" + why + "), recovering");
         BlockPos target = legs.get(legAt).pos();
+        // the stop that couldn't be reached costs more in later routes, so a bad one stops being chosen
+        if (!etherwarpLeg && (why.equals("stuck") || why.equals("no path"))) DwarvenStore.TRAILS.stuck(target);
+        if (mergedLegs.contains(legAt) && !simplifyOff) {
+            simplifyOff = true;
+            DwarvenLog.log("[NAV] a merged leg failed; walking the original stops for the rest of this trip");
+            plan(client);
+            return;
+        }
         DwarvenLog.log("[NAV] leg " + (legAt + 1) + "/" + legs.size() + " " + (etherwarpLeg ? "(etherwarp) " : "") + why + " at "
                 + client.player.blockPosition().toShortString());
         if (connection != null && target.equals(connection)) {
@@ -691,7 +779,7 @@ public final class AreaNavigator {
         Vec3 eye = ether ? EtherwarpHelper.getEyePosition(client, pos) : client.player.getEyePosition();
         RotationUtils.Rotation want = RotationUtils.calculateLookAt(eye, hopAim);
         FailsafeManager.addRotationGracePeriod(AetherConfig.FAILSAFE_ROTATION_WARP_GRACE_MS.get());
-        RotationManager.steerAngles(client, want.yaw, want.pitch, DwarvenCamera.profile());
+        RotationManager.steerAngles(client, want.yaw, want.pitch, ether ? DwarvenCamera.profile(DwarvenCamera.Activity.ETHERWARP) : DwarvenCamera.profile(DwarvenCamera.Activity.NAVIGATION));
         float yawOff = Math.abs(Mth.wrapDegrees(want.yaw - client.player.getYRot()));
         float pitchOff = Math.abs(want.pitch - client.player.getXRot());
         float tolerance = ether ? HOP_AIM_DEGREES : AOTV_AIM_DEGREES;
@@ -715,6 +803,8 @@ public final class AreaNavigator {
         DwarvenStore.TRAILS.interrupted();
         Vec3 intended = new Vec3(hop.toX(), hop.toY(), hop.toZ());
         HopLanding.Result r = HopLanding.judge(hopLaunch, intended, pos, legs, legAt);
+        boolean useful = r.verdict() == HopLanding.Verdict.ON_TARGET || r.verdict() == HopLanding.Verdict.CONTINUE;
+        DwarvenStore.TRAILS.hopResult(hop, useful, r.deviation(), System.currentTimeMillis() - hopStartedAt);
         String kind = hop.kind().name().toLowerCase();
         DwarvenLog.log(String.format("[NAV] %s completed: launch %s, expected %s, actual %s, deviation %.1f (measured after the position %s)",
                 kind, fmt(hopLaunch), fmt(intended), fmt(pos), r.deviation(), settleTicks >= HOP_SETTLE_TICKS ? "settled" : "kept changing"));
@@ -764,6 +854,7 @@ public final class AreaNavigator {
     // a failed teleport is blacklisted and the route is planned again without it, so the same throw isn't repeated
     private void hopFailed(Minecraft client, TrailMemory.Hop hop, String why) {
         Ops.record("hop.failed", System.currentTimeMillis() - hopStartedAt);
+        DwarvenStore.TRAILS.hopResult(hop, false, 0, 0);
         for (Ops.Op op : new Ops.Op[]{hopPrepOp, aimOp, hopExecOp, hopConfirmOp}) if (op != null && !op.done()) op.cancel(why);
         Diag.event(Diag.RECOVERY, hop.kind().name().toLowerCase() + " failed: " + why);
         endHop(client);

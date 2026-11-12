@@ -101,6 +101,61 @@ public final class RoutePlanner {
         return w == Warp.AFTER_FAILURE_HERE || w == Warp.NO_ROUTE_HERE || w == Warp.QUICKER;
     }
 
+    // a walking leg goes to the etherwarp pathfinder when its expected time, with half a second of margin, beats
+    // walking it, and never for a short hop
+    public static boolean etherwarpBeatsWalking(double distance, double minDistance, double walkSpeed, double pathStartSeconds,
+                                                double etherLegSeconds) {
+        if (distance < minDistance) return false;
+        return etherLegSeconds + 0.5 < distance / walkSpeed + pathStartSeconds;
+    }
+
+    // longest single walk a merged leg may cover; inside one pathfinder search's comfortable range
+    public static final double MERGE_SPAN = 36.0;
+    // a skipped stop may sit this far off the straight line, sideways or in height, and still count as on the way
+    public static final double MERGE_CORRIDOR = 2.5;
+
+    // drops walking stops the straight line already passes by, so a run of short legs becomes one longer walk and
+    // the pathfinder restarts less often. a teleport's start and anything after it stay exactly as planned
+    public static List<Waypoint> simplify(BlockPos from, List<Waypoint> legs, double maxSpan, double corridor) {
+        List<Waypoint> out = new ArrayList<>();
+        BlockPos anchor = from;
+        int i = 0;
+        while (i < legs.size()) {
+            Waypoint w = legs.get(i);
+            if (w.hop() != null) {
+                out.add(w);
+                anchor = BlockPos.containing(w.hop().toX(), w.hop().toY() + 0.01, w.hop().toZ());
+                i++;
+                continue;
+            }
+            int best = i;
+            for (int j = i + 1; j < legs.size(); j++) {
+                if (legs.get(j).hop() != null) break;
+                if (Math.sqrt(anchor.distSqr(legs.get(j).pos())) > maxSpan) break;
+                boolean straight = true;
+                for (int k = i; k < j && straight; k++) straight = nearSegment(legs.get(k).pos(), anchor, legs.get(j).pos(), corridor);
+                if (!straight) break;
+                best = j;
+                // the stop a teleport leaves from is never walked past
+                if (j + 1 < legs.size() && legs.get(j + 1).hop() != null) break;
+            }
+            out.add(legs.get(best));
+            anchor = legs.get(best).pos();
+            i = best + 1;
+        }
+        return out;
+    }
+
+    static boolean nearSegment(BlockPos p, BlockPos a, BlockPos b, double corridor) {
+        double dx = b.getX() - a.getX(), dz = b.getZ() - a.getZ();
+        double len2 = dx * dx + dz * dz;
+        double t = len2 == 0 ? 0 : ((p.getX() - a.getX()) * dx + (p.getZ() - a.getZ()) * dz) / len2;
+        if (t < 0 || t > 1) return false;
+        double cx = a.getX() + t * dx - p.getX(), cz = a.getZ() + t * dz - p.getZ();
+        double y = a.getY() + t * (b.getY() - a.getY());
+        return Math.sqrt(cx * cx + cz * cz) <= corridor && Math.abs(y - p.getY()) <= corridor;
+    }
+
     private static List<Waypoint> withGoal(List<Waypoint> legs, BlockPos goal) {
         List<Waypoint> out = new ArrayList<>(legs);
         if (out.isEmpty() || out.get(out.size() - 1).pos().distSqr(goal) > 4) out.add(new Waypoint(goal, null));

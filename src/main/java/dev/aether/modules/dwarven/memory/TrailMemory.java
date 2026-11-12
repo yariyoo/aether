@@ -39,6 +39,102 @@ public final class TrailMemory {
     public record Waypoint(BlockPos pos, Hop hop) {}
 
     private final Map<Long, Hop> hops = new HashMap<>();
+    // teleports seen to work in play, kept so a route found once is a route known from then on
+    private final Set<Hop> learnedHops = new java.util.LinkedHashSet<>();
+    private final Map<Hop, HopStats> hopStats = new HashMap<>();
+    // trail points a walk got stuck at; the penalty fades so a fixed spot is tried again eventually
+    private final Map<Long, long[]> stuckAt = new HashMap<>();
+    private static final double STUCK_PENALTY = 25.0;
+    private static final double STUCK_HALF_LIFE_MS = 30 * 60_000.0;
+    private java.util.function.LongSupplier clock = System::currentTimeMillis;
+    private boolean avoidStuck = true;
+
+    // what a teleport has done so far: how often it worked, how far off it landed, how long it took
+    public static final class HopStats {
+        public int successes;
+        public int failures;
+        public double deviationSum;
+        public long millisSum;
+        public long lastSuccessAt;
+
+        public double failureRate() {
+            int n = successes + failures;
+            return n == 0 ? 0 : (double) failures / n;
+        }
+
+        public double meanDeviation() {
+            return successes == 0 ? 0 : deviationSum / successes;
+        }
+
+        public double meanMillis() {
+            return successes == 0 ? 0 : (double) millisSum / successes;
+        }
+    }
+
+    public void clock(java.util.function.LongSupplier c) {
+        clock = c;
+    }
+
+    public void avoidStuck(boolean on) {
+        avoidStuck = on;
+    }
+
+    public void learnHop(Hop hop) {
+        int before = hops.size();
+        seedHop(hop);
+        if (hops.size() > before) {
+            learnedHops.add(hop);
+            dirty = true;
+        }
+    }
+
+    public boolean knowsHop(Hop hop) {
+        return hops.containsValue(hop);
+    }
+
+    public int learnedHopCount() {
+        return learnedHops.size();
+    }
+
+    public void hopResult(Hop hop, boolean success, double deviation, long millis) {
+        HopStats st = hopStats.computeIfAbsent(hop, h -> new HopStats());
+        if (success) {
+            st.successes++;
+            st.deviationSum += deviation;
+            st.millisSum += millis;
+            st.lastSuccessAt = clock.getAsLong();
+        } else {
+            st.failures++;
+        }
+        dirty = true;
+    }
+
+    public HopStats hopStats(Hop hop) {
+        return hopStats.get(hop);
+    }
+
+    // a walk stalled on its way to this point; routes through it cost more until that fades or a walk gets past it
+    public void stuck(BlockPos at) {
+        int i = nearest(at, MERGE + 1);
+        if (i < 0) return;
+        long key = crumbs.get(i).asLong();
+        long[] rec = stuckAt.computeIfAbsent(key, k -> new long[2]);
+        rec[0]++;
+        rec[1] = clock.getAsLong();
+        dirty = true;
+    }
+
+    public void passed(BlockPos at) {
+        int i = nearest(at, MERGE);
+        if (i >= 0 && stuckAt.remove(crumbs.get(i).asLong()) != null) dirty = true;
+    }
+
+    public double stuckPenalty(BlockPos crumb) {
+        if (!avoidStuck) return 0;
+        long[] rec = stuckAt.get(crumb.asLong());
+        if (rec == null) return 0;
+        return STUCK_PENALTY * rec[0] * Math.pow(0.5, (clock.getAsLong() - rec[1]) / STUCK_HALF_LIFE_MS);
+    }
     private final List<BlockPos> crumbs = new ArrayList<>();
     private final List<Set<Integer>> links = new ArrayList<>();
     private final Map<Long, List<Integer>> grid = new HashMap<>();
@@ -279,7 +375,7 @@ public final class TrailMemory {
                 Hop hop = hops.get(edge(at, next));
                 if (hop != null && (!hopKinds.contains(hop.kind()) || bannedHops.contains(hop))) continue;
                 double step = hop != null ? hopCost + hopPenalty.applyAsDouble(hop) : Math.sqrt(crumbs.get(at).distSqr(crumbs.get(next)));
-                double c = cost[at] + step;
+                double c = cost[at] + step + (stuckAt.isEmpty() ? 0 : stuckPenalty(crumbs.get(next)));
                 if (c < cost[next]) {
                     cost[next] = c;
                     prev[next] = at;
@@ -345,6 +441,21 @@ public final class TrailMemory {
         JsonObject root = new JsonObject();
         root.add("points", points);
         root.add("links", edges);
+        JsonArray learned = new JsonArray();
+        for (Hop h : learnedHops) learned.add(hopJson(h, null));
+        root.add("hops", learned);
+        JsonArray stats = new JsonArray();
+        hopStats.forEach((h, st) -> stats.add(hopJson(h, st)));
+        root.add("hopStats", stats);
+        JsonArray stuck = new JsonArray();
+        stuckAt.forEach((k, rec) -> {
+            JsonArray e = new JsonArray();
+            e.add(k);
+            e.add(rec[0]);
+            e.add(rec[1]);
+            stuck.add(e);
+        });
+        root.add("stuck", stuck);
         dirty = false;
         return root;
     }
@@ -369,5 +480,52 @@ public final class TrailMemory {
             if (Math.sqrt(crumbs.get(a).distSqr(crumbs.get(b))) > MAX_LINK + 1) continue;
             links.get(a).add(b);
         }
+        learnedHops.clear();
+        hopStats.clear();
+        stuckAt.clear();
+        if (root.has("hops")) for (JsonElement el : root.getAsJsonArray("hops")) learnHop(hopFrom(el.getAsJsonArray()));
+        if (root.has("hopStats")) {
+            for (JsonElement el : root.getAsJsonArray("hopStats")) {
+                JsonArray a = el.getAsJsonArray();
+                HopStats st = new HopStats();
+                st.successes = a.get(7).getAsInt();
+                st.failures = a.get(8).getAsInt();
+                st.deviationSum = a.get(9).getAsDouble();
+                st.millisSum = a.get(10).getAsLong();
+                st.lastSuccessAt = a.get(11).getAsLong();
+                hopStats.put(hopFrom(a), st);
+            }
+        }
+        if (root.has("stuck")) {
+            for (JsonElement el : root.getAsJsonArray("stuck")) {
+                JsonArray a = el.getAsJsonArray();
+                stuckAt.put(a.get(0).getAsLong(), new long[]{a.get(1).getAsLong(), a.get(2).getAsLong()});
+            }
+        }
+        dirty = false;
+    }
+
+    private static JsonArray hopJson(Hop h, HopStats st) {
+        JsonArray a = new JsonArray();
+        a.add(h.fromX());
+        a.add(h.fromY());
+        a.add(h.fromZ());
+        a.add(h.toX());
+        a.add(h.toY());
+        a.add(h.toZ());
+        a.add(h.kind().name());
+        if (st != null) {
+            a.add(st.successes);
+            a.add(st.failures);
+            a.add(st.deviationSum);
+            a.add(st.millisSum);
+            a.add(st.lastSuccessAt);
+        }
+        return a;
+    }
+
+    private static Hop hopFrom(JsonArray a) {
+        return new Hop(HopKind.valueOf(a.get(6).getAsString()), a.get(0).getAsDouble(), a.get(1).getAsDouble(), a.get(2).getAsDouble(),
+                a.get(3).getAsDouble(), a.get(4).getAsDouble(), a.get(5).getAsDouble());
     }
 }
