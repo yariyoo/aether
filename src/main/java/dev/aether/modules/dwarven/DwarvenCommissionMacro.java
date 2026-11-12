@@ -38,7 +38,7 @@ import java.util.Set;
 public final class DwarvenCommissionMacro {
     public enum Stage { OFF, VALIDATE, OBSERVE, CLAIM, TRAVEL, MINE, FIGHT, WAIT }
 
-    private static final long OBSERVE_EVERY_MS = 1000L;
+    private static final long AUTO_START_DELAY_MS = 5000L;
     private static final long LEARN_EVERY_MS = 500L;
     private static final long SAVE_EVERY_MS = 30_000L;
     private static final long UNREADABLE_LIMIT_MS = 10_000L;
@@ -47,7 +47,6 @@ public final class DwarvenCommissionMacro {
     private static final int STALL_MIN_BLOCKS = 15;
     private static final long TAB_LAG_MS = 6000L;
     private static final long INPUT_PAUSE_MS = 3000L;
-    private static final long SKIP_COMMISSION_MS = 5 * 60_000L;
     private static final double ARRIVE_WITHIN = 2.5;
     private static final double PRIOR_RATE = 60.0;
 
@@ -90,6 +89,9 @@ public final class DwarvenCommissionMacro {
     private static int minedAtLastProgress;
     private static int levelId;
     private static boolean keyWasDown;
+    private static boolean manuallyStopped;
+    private static boolean resumePending;
+    private static long inMinesSince;
 
     private static long sessionStartedAt;
     private static int completed;
@@ -104,8 +106,18 @@ public final class DwarvenCommissionMacro {
     }
 
     public static void toggle(Minecraft client) {
-        if (isRunning()) stop(client, "toggled off", true);
-        else requestStart();
+        if (isRunning()) {
+            // a manual stop also holds off auto start until the player leaves and comes back
+            manuallyStopped = true;
+            resumePending = false;
+            stop(client, "toggled off", true);
+        } else {
+            requestStart();
+        }
+    }
+
+    private static long restMs() {
+        return AetherConfig.DWARVEN_REST_MINUTES.get() * 60_000L;
     }
 
     public static void requestStart() {
@@ -133,6 +145,31 @@ public final class DwarvenCommissionMacro {
         stop(client, reason, true);
     }
 
+    // a disconnect or lobby swap takes us out of the mines; come back to work once we're in them again
+    private static void haltAndResumeLater(Minecraft client, String reason) {
+        boolean resume = AetherConfig.DWARVEN_AUTO_RESUME.get();
+        halt(client, reason + (resume ? ", will resume when back in the Dwarven Mines" : ""));
+        resumePending = resume;
+    }
+
+    private static void autoStart(Minecraft client, boolean inMines, long now) {
+        if (!inMines) {
+            inMinesSince = 0;
+            manuallyStopped = false;
+            return;
+        }
+        if (inMinesSince == 0) inMinesSince = now;
+        if (isRunning() || now - inMinesSince < AUTO_START_DELAY_MS || MacroStateManager.isMacroRunning()) return;
+        if (resumePending) {
+            resumePending = false;
+            DwarvenLog.log("back in the Dwarven Mines, resuming");
+            requestStart();
+        } else if (AetherConfig.DWARVEN_AUTO_START.get() && !manuallyStopped) {
+            DwarvenLog.log("auto start: in the Dwarven Mines");
+            requestStart();
+        }
+    }
+
     public static void onChat(String message) {
         miner.onChat(message);
         claims.onChat(message);
@@ -150,6 +187,7 @@ public final class DwarvenCommissionMacro {
         pollKeybind(client);
         boolean inMines = ClientUtils.getCurrentLocation() == MacroState.Location.DWARVEN_MINES;
         if (inMines) learn(client, now);
+        autoStart(client, inMines, now);
         if (pendingStart && client.gui.screen() == null) {
             pendingStart = false;
             begin(client, now);
@@ -168,12 +206,13 @@ public final class DwarvenCommissionMacro {
         }
         String unsafe = unsafe(client, inMines, now);
         if (unsafe != null) {
-            halt(client, unsafe);
+            if (!inMines) haltAndResumeLater(client, unsafe);
+            else halt(client, unsafe);
             return;
         }
         if (userTookOver(client, now)) return;
         scanner.tick(client, AetherConfig.DWARVEN_EXTENDED_RADIUS.get(), AetherConfig.DWARVEN_SCAN_BUDGET.get());
-        if (now - lastObserveAt >= OBSERVE_EVERY_MS) {
+        if (now - lastObserveAt >= AetherConfig.DWARVEN_OBSERVE_MS.get()) {
             lastObserveAt = now;
             commissions = CommissionReader.fromTab(TablistUtils.getTabLines(client));
         }
@@ -351,6 +390,10 @@ public final class DwarvenCommissionMacro {
         CommissionScheduler.Choice choice = CommissionScheduler.choose(open, rules, current == null ? null : current.name(),
                 o -> travelSeconds(o, feet, now), c -> DwarvenStore.WORK.secondsFor(c.name()));
         if (choice == null) {
+            if (!unknown.isEmpty() && AetherConfig.DWARVEN_STOP_UNKNOWN_AREA.get()) {
+                halt(client, "no known way to " + String.join(", ", unknown));
+                return;
+            }
             String why = whyNothing(commissions, unknown);
             if (!why.equals(lastNothingReason)) {
                 lastNothingReason = why;
@@ -426,7 +469,8 @@ public final class DwarvenCommissionMacro {
         if (AetherConfig.DWARVEN_VEIN_MEMORY.get()) {
             SpotMemory.Spot spot = DwarvenStore.SPOTS.best(o.area(), now, AetherConfig.DWARVEN_RECHECK_SECONDS.get() * 1000L,
                     PRIOR_RATE, triedSpots, p -> AreaNavigator.walkSeconds(feet, p));
-            if (spot != null && spot.blocks > 0) return spot.pos;
+            boolean inRange = spot != null && Math.sqrt(spot.pos.distSqr(feet)) <= AetherConfig.DWARVEN_MAX_EXPLORE.get();
+            if (spot != null && spot.blocks > 0 && (inRange || o.area() != null)) return spot.pos;
         }
         if (o.area() == null) return null;
         return DwarvenStore.AREAS.nearestPoint(o.area(), feet);
@@ -476,8 +520,8 @@ public final class DwarvenCommissionMacro {
             triedSpots.add(navigator.goal());
             if (!v.retry()) {
                 budget.succeeded(Failure.NAVIGATION);
-                skipped.put(current.name(), now + SKIP_COMMISSION_MS);
-                DwarvenLog.log("can't reach " + current.name() + " (" + navigator.failure() + "), leaving it for " + SKIP_COMMISSION_MS / 60_000 + " minutes");
+                skipped.put(current.name(), now + restMs());
+                DwarvenLog.log("can't reach " + current.name() + " (" + navigator.failure() + "), leaving it for " + AetherConfig.DWARVEN_REST_MINUTES.get() + " minutes");
                 current = null;
                 enter(Stage.OBSERVE, "navigation gave up");
             } else {
@@ -504,7 +548,7 @@ public final class DwarvenCommissionMacro {
     private static void startFighting(Minecraft client, long now) {
         CombatTarget combat = CombatTarget.of(current.name());
         if (combat == null) {
-            skipped.put(current.name(), now + SKIP_COMMISSION_MS);
+            skipped.put(current.name(), now + restMs());
             current = null;
             enter(Stage.OBSERVE, "unknown combat commission");
             return;
@@ -541,9 +585,9 @@ public final class DwarvenCommissionMacro {
         boolean stalled = now - lastProgressAt > FIGHT_STALL_MS;
         if (fighter.outcome() == DwarvenFighter.Outcome.NO_TARGETS || stalled) {
             DwarvenLog.log((stalled ? "no progress on " + current.name() + " for " + FIGHT_STALL_MS / 1000 + "s"
-                    : "no mobs for " + current.name() + " around") + ", leaving it for " + SKIP_COMMISSION_MS / 60_000 + " minutes");
+                    : "no mobs for " + current.name() + " around") + ", leaving it for " + AetherConfig.DWARVEN_REST_MINUTES.get() + " minutes");
             fighter.stop(client);
-            skipped.put(current.name(), now + SKIP_COMMISSION_MS);
+            skipped.put(current.name(), now + restMs());
             current = null;
             enter(Stage.OBSERVE, "giving this commission a rest");
         }
@@ -640,7 +684,7 @@ public final class DwarvenCommissionMacro {
         if (!v.retry() || next == null) {
             budget.succeeded(failure);
             stopWork(client);
-            skipped.put(current.name(), now + SKIP_COMMISSION_MS);
+            skipped.put(current.name(), now + restMs());
             current = null;
             enter(Stage.OBSERVE, "giving this commission a rest");
             return;

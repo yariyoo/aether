@@ -561,6 +561,14 @@ public final class AetherConfig {
         public static final BooleanEntry DWARVEN_MITHRIL = Config.bool("dwarvenMithril", true);
         public static final BooleanEntry DWARVEN_COMBAT = Config.bool("dwarvenCombat", true);
         public static final BooleanEntry DWARVEN_EVENTS = Config.bool("dwarvenEvents", true);
+        public static final BooleanEntry DWARVEN_AUTO_START = Config.bool("dwarvenAutoStart", false);
+        public static final BooleanEntry DWARVEN_AUTO_RESUME = Config.bool("dwarvenAutoResume", true);
+        public static final IntEntry DWARVEN_OBSERVE_MS = Config.integer("dwarvenObserveMs", 1000).range(250, 5000);
+        public static final IntEntry DWARVEN_REST_MINUTES = Config.integer("dwarvenRestMinutes", 5).range(1, 30);
+        public static final IntEntry DWARVEN_MAX_EXPLORE = Config.integer("dwarvenMaxExplore", 200).range(32, 400);
+        public static final IntEntry DWARVEN_LEG_LENGTH = Config.integer("dwarvenLegLength", 24).range(8, 48);
+        public static final BooleanEntry DWARVEN_STOP_UNKNOWN_AREA = Config.bool("dwarvenStopUnknownArea", false);
+        public static final StringEntry DWARVEN_TOOL_NAME = Config.string("dwarvenToolName", "");
         public static final IntEntry DWARVEN_CLAIM_METHOD = Config.integer("dwarvenClaimMethod", 0).range(0, 2);
         public static final BooleanEntry DWARVEN_TITANIUM = Config.bool("dwarvenTitanium", true);
         public static final BooleanEntry DWARVEN_AREA_MINING = Config.bool("dwarvenAreaMining", true);

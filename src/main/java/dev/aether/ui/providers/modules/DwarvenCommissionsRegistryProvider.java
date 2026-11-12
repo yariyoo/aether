@@ -16,6 +16,7 @@ import dev.aether.ui.settings.ModulesTab;
 import dev.aether.ui.settings.Setting;
 import dev.aether.ui.settings.SettingGroup;
 import dev.aether.ui.settings.SliderSetting;
+import dev.aether.ui.settings.TextSetting;
 import dev.aether.ui.settings.ToggleSetting;
 import net.minecraft.client.Minecraft;
 
@@ -40,12 +41,14 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(new KeybindSetting("Toggle Keybind", AetherKeybindRegistry.getDwarvenCommissionsKey()))
                 .add(new InfoSetting("Status", () -> DwarvenCommissionMacro.isRunning()
                         ? "Running: " + DwarvenCommissionMacro.hudState() + ", " + DwarvenCommissionMacro.hudCommission()
-                        : "Off. Needs a mining tool and a Royal Pigeon in the hotbar. It only goes to areas it has seen you visit.").multiline())
+                        : "Off. Needs a mining tool in the hotbar, and a Royal Pigeon or a known Emissary to claim.").multiline())
                 .add(new DropdownSetting("Commission Strategy", List.of("Fastest", "Closest", "Titanium First", "Mithril First"),
                         () -> AetherConfig.DWARVEN_STRATEGY.get(), v -> save(() -> AetherConfig.DWARVEN_STRATEGY.set(v))))
                 .add(slider("Stop After Commissions (0 = never)", 0, 200, AetherConfig.DWARVEN_STOP_AFTER))
                 .add(slider("Session Limit Minutes (0 = none)", 0, 600, AetherConfig.DWARVEN_SESSION_MINUTES))
-                .add(toggle("Pause When I Move The Camera", AetherConfig.DWARVEN_PAUSE_ON_INPUT));
+                .add(toggle("Pause When I Move The Camera", AetherConfig.DWARVEN_PAUSE_ON_INPUT))
+                .add(toggle("Auto Start In The Dwarven Mines", AetherConfig.DWARVEN_AUTO_START))
+                .add(toggle("Resume After Leaving And Coming Back", AetherConfig.DWARVEN_AUTO_RESUME));
 
         SettingGroup commissions = SettingGroup.alwaysOn("Commissions", "Which commissions it takes and how it chooses")
                 .add(toggle("Mithril Commissions", AetherConfig.DWARVEN_MITHRIL))
@@ -56,7 +59,9 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(new DropdownSetting("Claim Method", List.of("Pigeon, Else Emissary", "Royal Pigeon Only", "Emissary Only"),
                         () -> AetherConfig.DWARVEN_CLAIM_METHOD.get(), v -> save(() -> AetherConfig.DWARVEN_CLAIM_METHOD.set(v))))
                 .add(toggle("Favour Commissions That Overlap", AetherConfig.DWARVEN_OVERLAP))
-                .add(slider("Switch Only If This Much Faster", 0f, 0.9f, AetherConfig.DWARVEN_SWITCH_GAIN, 2).asPercentage());
+                .add(slider("Switch Only If This Much Faster", 0f, 0.9f, AetherConfig.DWARVEN_SWITCH_GAIN, 2).asPercentage())
+                .add(slider("Progress Check Interval Ms", 250, 5000, AetherConfig.DWARVEN_OBSERVE_MS))
+                .add(slider("Rest A Failing Commission Minutes", 1, 30, AetherConfig.DWARVEN_REST_MINUTES));
 
         SettingGroup discovery = SettingGroup.alwaysOn("Vein Discovery", "How it finds and remembers ore")
                 .add(slider("Local Discovery Radius", 8, 48, AetherConfig.DWARVEN_LOCAL_RADIUS))
@@ -65,9 +70,12 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(slider("Smallest Vein Worth Walking To", 1, 20, AetherConfig.DWARVEN_MIN_VEIN))
                 .add(toggle("Remember Productive Spots", AetherConfig.DWARVEN_VEIN_MEMORY))
                 .add(toggle("Explore Other Spots When Dry", AetherConfig.DWARVEN_EXPLORE))
-                .add(slider("Recheck Empty Spots After Seconds", 5, 300, AetherConfig.DWARVEN_RECHECK_SECONDS));
+                .add(slider("Recheck Empty Spots After Seconds", 5, 300, AetherConfig.DWARVEN_RECHECK_SECONDS))
+                .add(slider("Maximum Exploration Distance", 32, 400, AetherConfig.DWARVEN_MAX_EXPLORE));
 
         SettingGroup mining = SettingGroup.alwaysOn("Mining", "How it works a vein")
+                .add(new TextSetting("Mining Tool Name", "blank = any drill, pickaxe or gauntlet",
+                        AetherConfig.DWARVEN_TOOL_NAME::get, v -> save(() -> AetherConfig.DWARVEN_TOOL_NAME.set(v))))
                 .add(toggle("Titanium Priority", AetherConfig.DWARVEN_TITANIUM_PRIORITY))
                 .add(toggle("Mine Mithril For Titanium", AetherConfig.DWARVEN_MITHRIL_FOR_TITANIUM))
                 .add(slider("Mining Timeout Seconds", 1f, 15f, AetherConfig.DWARVEN_BLOCK_TIMEOUT, 1))
@@ -81,7 +89,8 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(toggle("Use Etherwarp When Available", AetherConfig.DWARVEN_USE_ETHERWARP))
                 .add(toggle("Learn And Reuse Walked Routes", AetherConfig.DWARVEN_LEARN_TRAILS))
                 .add(slider("Stuck Timeout Seconds", 2, 30, AetherConfig.DWARVEN_STUCK_SECONDS))
-                .add(slider("Navigation Retries", 1, 10, AetherConfig.DWARVEN_NAV_RETRIES));
+                .add(slider("Navigation Retries", 1, 10, AetherConfig.DWARVEN_NAV_RETRIES))
+                .add(slider("Longest Single Walk Blocks", 8, 48, AetherConfig.DWARVEN_LEG_LENGTH));
 
         SettingGroup camera = SettingGroup.alwaysOn("Camera", "Smooth camera movement while mining")
                 .add(new DropdownSetting("Rotation Mode", List.of("Smooth", "Adaptive", "Precision"),
@@ -100,6 +109,7 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
         SettingGroup recovery = SettingGroup.alwaysOn("Recovery And HUD", "What it does when something goes wrong, and what it shows")
                 .add(slider("Maximum Recovery Attempts", 1, 10, AetherConfig.DWARVEN_MAX_RECOVERY))
                 .add(slider("Failed Target Blacklist Seconds", 5, 600, AetherConfig.DWARVEN_BLACKLIST_SECONDS))
+                .add(toggle("Stop When A Commission Area Is Unknown", AetherConfig.DWARVEN_STOP_UNKNOWN_AREA))
                 .add(toggle("Show Dwarven HUD", AetherConfig.SHOW_DWARVEN_HUD))
                 .add(toggle("HUD Debug Rows", AetherConfig.DWARVEN_HUD_DEBUG));
 

@@ -33,7 +33,6 @@ public final class AreaNavigator {
     public enum Status { IDLE, RUNNING, ARRIVED, FAILED }
 
     public static final String FORGE_WARP = "@forge warp";
-    private static final double LEG = 24.0;
     private static final double JOIN = 12.0;
     private static final double LEG_REACHED = 3.0;
     private static final long PLAN_GRACE_MS = 8000L;
@@ -139,7 +138,7 @@ public final class AreaNavigator {
         BlockPos feet = client.player.blockPosition();
         List<Waypoint> route = new ArrayList<>();
         Set<HopKind> kinds = hopKinds(client);
-        if (AetherConfig.DWARVEN_LEARN_TRAILS.get()) route.addAll(DwarvenStore.TRAILS.waypoints(feet, goal, JOIN, LEG, kinds));
+        if (AetherConfig.DWARVEN_LEARN_TRAILS.get()) route.addAll(DwarvenStore.TRAILS.waypoints(feet, goal, JOIN, AetherConfig.DWARVEN_LEG_LENGTH.get(), kinds));
         boolean known = !route.isEmpty();
         if (route.isEmpty() || route.get(route.size() - 1).pos().distSqr(goal) > 4) route.add(new Waypoint(goal, null));
         legs = route;

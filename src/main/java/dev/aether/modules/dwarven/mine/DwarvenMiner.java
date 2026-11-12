@@ -518,6 +518,14 @@ public final class DwarvenMiner {
     }
 
     public static int toolSlot(Minecraft client) {
+        String wanted = AetherConfig.DWARVEN_TOOL_NAME.get().strip().toLowerCase(Locale.ROOT);
+        if (!wanted.isEmpty()) {
+            for (int i = 0; i < 9; i++) {
+                ItemStack stack = client.player.getInventory().getItem(i);
+                if (!stack.isEmpty() && stack.getHoverName().getString().toLowerCase(Locale.ROOT).contains(wanted)) return i;
+            }
+            return -1;
+        }
         for (int i = 0; i < 9; i++) {
             ItemStack stack = client.player.getInventory().getItem(i);
             if (stack.isEmpty()) continue;
