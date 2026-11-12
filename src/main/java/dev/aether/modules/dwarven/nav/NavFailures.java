@@ -1,11 +1,14 @@
 package dev.aether.modules.dwarven.nav;
 
+import dev.aether.modules.dwarven.memory.TrailMemory.Hop;
 import net.minecraft.core.BlockPos;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 // trips that failed, kept across macro stages so a destination that keeps failing from the same place isn't chosen again
 public final class NavFailures {
@@ -17,6 +20,9 @@ public final class NavFailures {
     public record Failure(BlockPos goal, BlockPos from, String reason, int count, long lastAt) {}
 
     private static final Map<Long, Failure> FAILURES = new HashMap<>();
+    private static final Map<Hop, Long> BANNED_HOPS = new HashMap<>();
+    private static final Map<Hop, Integer> HOP_MISSES = new HashMap<>();
+    private static final Map<BlockPos, Long> UNREACHABLE = new HashMap<>();
 
     private NavFailures() {}
 
@@ -63,9 +69,44 @@ public final class NavFailures {
 
     private static void prune(long now) {
         FAILURES.values().removeIf(f -> now - f.lastAt() > REMEMBER_MS);
+        BANNED_HOPS.values().removeIf(until -> until <= now);
+        UNREACHABLE.values().removeIf(until -> until <= now);
+    }
+
+    // a failed edge is taken out of planning for a while; the ground around it stays usable
+    public static synchronized void banHop(Hop hop, long until) {
+        BANNED_HOPS.put(hop, until);
+        HOP_MISSES.remove(hop);
+    }
+
+    public static synchronized Set<Hop> bannedHops(long now) {
+        prune(now);
+        return new HashSet<>(BANNED_HOPS.keySet());
+    }
+
+    // a hop that lands off but still somewhere useful is trusted once more before it is banned
+    public static synchronized int hopMissed(Hop hop) {
+        return HOP_MISSES.merge(hop, 1, Integer::sum);
+    }
+
+    public static synchronized void hopLanded(Hop hop) {
+        HOP_MISSES.remove(hop);
+    }
+
+    // a join point the pathfinder couldn't walk to from where we tried it
+    public static synchronized void unreachable(BlockPos pos, long until) {
+        UNREACHABLE.put(pos, until);
+    }
+
+    public static synchronized Set<BlockPos> unreachable(long now) {
+        prune(now);
+        return new HashSet<>(UNREACHABLE.keySet());
     }
 
     public static synchronized void clear() {
         FAILURES.clear();
+        BANNED_HOPS.clear();
+        HOP_MISSES.clear();
+        UNREACHABLE.clear();
     }
 }
