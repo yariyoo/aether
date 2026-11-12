@@ -560,6 +560,7 @@ public final class AetherConfig {
         public static final BooleanEntry DWARVEN_PAUSE_ON_INPUT = Config.bool("dwarvenPauseOnInput", true);
         public static final BooleanEntry DWARVEN_MITHRIL = Config.bool("dwarvenMithril", true);
         public static final BooleanEntry DWARVEN_COMBAT = Config.bool("dwarvenCombat", true);
+        public static final BooleanEntry DWARVEN_EVENTS = Config.bool("dwarvenEvents", true);
         public static final IntEntry DWARVEN_CLAIM_METHOD = Config.integer("dwarvenClaimMethod", 0).range(0, 2);
         public static final BooleanEntry DWARVEN_TITANIUM = Config.bool("dwarvenTitanium", true);
         public static final BooleanEntry DWARVEN_AREA_MINING = Config.bool("dwarvenAreaMining", true);

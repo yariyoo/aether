@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CommissionTests {
-    private static final Rules FASTEST = new Rules(Strategy.FASTEST, true, true, true, true, 0.25, true);
+    private static final Rules FASTEST = new Rules(Strategy.FASTEST, true, true, true, true, 0.25, true, true);
 
     @Test
     void readsTheTabListSection() {
@@ -77,7 +77,7 @@ class CommissionTests {
         var choice = CommissionScheduler.choose(list, FASTEST, null, o -> "Royal Mines".equals(o.area()) ? 40 : 5, c -> 60);
         // 40s travel + 12s of work left beats 5s travel + 60s of work
         assertEquals("Royal Mines Mithril", choice.commission().name());
-        Rules noCombat = new Rules(Strategy.FASTEST, true, true, true, true, 0.25, false);
+        Rules noCombat = new Rules(Strategy.FASTEST, true, true, true, true, 0.25, false, true);
         assertNull(CommissionScheduler.choose(List.of(list.get(0)), noCombat, null, o -> 0, c -> 60));
         assertEquals("Goblin Slayer", CommissionScheduler.choose(List.of(list.get(0)), FASTEST, null, o -> 0, c -> 60).commission().name());
     }
@@ -103,9 +103,9 @@ class CommissionTests {
 
     @Test
     void settingsSwitchCommissionKindsOff() {
-        Rules noTitanium = new Rules(Strategy.FASTEST, true, false, true, true, 0.25, true);
+        Rules noTitanium = new Rules(Strategy.FASTEST, true, false, true, true, 0.25, true, true);
         assertFalse(CommissionScheduler.allowed(Objective.of("Titanium Miner"), noTitanium));
-        Rules noAreas = new Rules(Strategy.FASTEST, true, true, false, true, 0.25, true);
+        Rules noAreas = new Rules(Strategy.FASTEST, true, true, false, true, 0.25, true, true);
         assertFalse(CommissionScheduler.allowed(Objective.of("Royal Mines Mithril"), noAreas));
         assertTrue(CommissionScheduler.allowed(Objective.of("Mithril Miner"), noAreas));
     }
@@ -153,5 +153,16 @@ class CommissionTests {
         assertEquals(1_200.0, dev.aether.modules.dwarven.fight.DwarvenFighter.parse("[Lv30] Goblin 1.2k/2k❤").health());
         assertEquals(0.0, dev.aether.modules.dwarven.fight.DwarvenFighter.parse("[Lv3] Weakling 0/200❤").health());
         assertNull(dev.aether.modules.dwarven.fight.DwarvenFighter.parse("Royal Pigeon"));
+    }
+
+    @Test
+    void aGoblinRaidCountsOnlyWhileItIsRunning() {
+        var running = List.of("www.hypixel.net", "Kill goblins!", "Event: GOBLIN RAID", "Remaining: 306 goblins", "Your kills: 43 ☠");
+        var announced = List.of("www.hypixel.net", "Zone: The Forge", "Event: GOBLIN RAID", "Purse: 32,295,478");
+        assertTrue(dev.aether.modules.dwarven.event.GoblinRaid.active(running));
+        assertFalse(dev.aether.modules.dwarven.event.GoblinRaid.active(announced));
+        assertTrue(dev.aether.modules.dwarven.event.GoblinRaid.isRaidCommission("Goblin Raid Slayer"));
+        assertFalse(dev.aether.modules.dwarven.event.GoblinRaid.isRaidCommission("Raffle"));
+        assertTrue(CombatTarget.of("Goblin Raid").mobs().contains("Weakling"));
     }
 }

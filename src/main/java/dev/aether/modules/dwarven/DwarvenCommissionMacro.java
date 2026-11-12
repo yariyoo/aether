@@ -10,6 +10,7 @@ import dev.aether.modules.dwarven.commission.CommissionReader;
 import dev.aether.modules.dwarven.commission.CommissionScheduler;
 import dev.aether.modules.dwarven.commission.DwarvenCommission;
 import dev.aether.modules.dwarven.commission.Objective;
+import dev.aether.modules.dwarven.event.GoblinRaid;
 import dev.aether.modules.dwarven.fight.DwarvenFighter;
 import dev.aether.modules.dwarven.memory.DwarvenStore;
 import dev.aether.modules.dwarven.memory.HuntPoints;
@@ -56,6 +57,7 @@ public final class DwarvenCommissionMacro {
     // a fight that moves the commission along keeps going; this long with no progress means the hunting ground is wrong
     private static final long FIGHT_STALL_MS = 90_000L;
     private static final double NEAR_HUNT_POINT = 24.0;
+    private static final double RAID_SIGHT = 40.0;
     private static final AreaNavigator navigator = new AreaNavigator();
     private static final ClaimManager claims = new ClaimManager();
     private static RetryBudget budget = new RetryBudget(4, 1500L);
@@ -334,6 +336,8 @@ public final class DwarvenCommissionMacro {
         for (DwarvenCommission c : commissions) {
             if (c.done() || skipped.containsKey(c.name())) continue;
             Objective o = Objective.of(c.name());
+            // events are never hunted for; a raid is joined only while it runs right where we are
+            if (o.kind() == Objective.Kind.EVENT && (!GoblinRaid.isRaidCommission(c.name()) || !raidHere(client))) continue;
             if (o.kind() == Objective.Kind.MINING && o.area() != null && !DwarvenStore.AREAS.knows(o.area())) {
                 unknown.add(o.area());
                 continue;
@@ -343,7 +347,7 @@ public final class DwarvenCommissionMacro {
         CommissionScheduler.Rules rules = new CommissionScheduler.Rules(
                 CommissionScheduler.Strategy.values()[AetherConfig.DWARVEN_STRATEGY.get()], AetherConfig.DWARVEN_MITHRIL.get(),
                 AetherConfig.DWARVEN_TITANIUM.get(), AetherConfig.DWARVEN_AREA_MINING.get(), AetherConfig.DWARVEN_OVERLAP.get(),
-                AetherConfig.DWARVEN_SWITCH_GAIN.get(), AetherConfig.DWARVEN_COMBAT.get());
+                AetherConfig.DWARVEN_SWITCH_GAIN.get(), AetherConfig.DWARVEN_COMBAT.get(), true);
         CommissionScheduler.Choice choice = CommissionScheduler.choose(open, rules, current == null ? null : current.name(),
                 o -> travelSeconds(o, feet, now), c -> DwarvenStore.WORK.secondsFor(c.name()));
         if (choice == null) {
@@ -381,7 +385,9 @@ public final class DwarvenCommissionMacro {
             Objective o = Objective.of(c.name());
             String reason = switch (o.kind()) {
                 case COMBAT -> skipped.containsKey(c.name()) ? "resting after failures" : "combat is turned off in settings";
-                case EVENT -> "events aren't supported yet";
+                case EVENT -> GoblinRaid.isRaidCommission(c.name())
+                        ? (AetherConfig.DWARVEN_EVENTS.get() ? "only joined while a raid runs where it is" : "events are turned off in settings")
+                        : "this event isn't supported yet";
                 case UNKNOWN -> "not a commission it knows yet";
                 case MINING -> skipped.containsKey(c.name()) ? "resting after failures"
                         : o.area() != null && unknown.contains(o.area()) ? "hasn't seen " + o.area() + " yet" : "turned off in settings";
@@ -397,7 +403,13 @@ public final class DwarvenCommissionMacro {
         return out.toString();
     }
 
+    private static boolean raidHere(Minecraft client) {
+        if (!AetherConfig.DWARVEN_EVENTS.get() || !GoblinRaid.active(ClientUtils.getSidebarLines())) return false;
+        return DwarvenFighter.anyVisible(client, GoblinRaid.MOBS, RAID_SIGHT);
+    }
+
     private static double travelSeconds(Objective o, BlockPos feet, long now) {
+        if (o.kind() == Objective.Kind.EVENT) return 0;
         BlockPos target = destination(o, feet, now);
         if (target == null) return o.anywhere() ? 0 : 600;
         return AreaNavigator.travelSeconds(feet, target);
@@ -433,7 +445,7 @@ public final class DwarvenCommissionMacro {
 
     private static void goWork(Minecraft client, long now) {
         BlockPos feet = client.player.blockPosition();
-        if (inArea(objective, feet)) {
+        if (objective.kind() == Objective.Kind.EVENT || inArea(objective, feet)) {
             startWork(client, now);
             return;
         }
@@ -485,7 +497,7 @@ public final class DwarvenCommissionMacro {
     }
 
     private static void startWork(Minecraft client, long now) {
-        if (objective.kind() == Objective.Kind.COMBAT) startFighting(client, now);
+        if (objective.kind() == Objective.Kind.COMBAT || objective.kind() == Objective.Kind.EVENT) startFighting(client, now);
         else startMining(client, now);
     }
 
@@ -511,6 +523,13 @@ public final class DwarvenCommissionMacro {
         if (commissionChanged(client)) return;
         if (client.gui.screen() != null) {
             pauseWork(client);
+            return;
+        }
+        if (objective.kind() == Objective.Kind.EVENT && !GoblinRaid.active(ClientUtils.getSidebarLines())) {
+            DwarvenLog.log("the raid ended, going back to commissions");
+            fighter.stop(client);
+            current = null;
+            enter(Stage.OBSERVE, "raid over");
             return;
         }
         fighter.tick(client);

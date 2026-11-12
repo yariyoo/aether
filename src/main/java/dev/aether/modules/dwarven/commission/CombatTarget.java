@@ -12,6 +12,7 @@ public record CombatTarget(Set<String> mobs, String area) {
             case "glacite walker slayer" -> new CombatTarget(Set.of("Glacite Walker"), "Great Ice Wall");
             case "treasure hoarder puncher" -> new CombatTarget(Set.of("Treasure Hoarder"), null);
             case "star sentry puncher" -> new CombatTarget(Set.of("Star Sentry"), null);
+            case "goblin raid", "goblin raid slayer" -> new CombatTarget(dev.aether.modules.dwarven.event.GoblinRaid.MOBS, null);
             default -> null;
         };
     }

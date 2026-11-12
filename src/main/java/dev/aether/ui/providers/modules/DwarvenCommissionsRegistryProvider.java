@@ -52,6 +52,7 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(toggle("Titanium Commissions", AetherConfig.DWARVEN_TITANIUM))
                 .add(toggle("Area Mining Commissions", AetherConfig.DWARVEN_AREA_MINING))
                 .add(toggle("Combat Commissions", AetherConfig.DWARVEN_COMBAT))
+                .add(toggle("Join A Goblin Raid Running Nearby", AetherConfig.DWARVEN_EVENTS))
                 .add(new DropdownSetting("Claim Method", List.of("Pigeon, Else Emissary", "Royal Pigeon Only", "Emissary Only"),
                         () -> AetherConfig.DWARVEN_CLAIM_METHOD.get(), v -> save(() -> AetherConfig.DWARVEN_CLAIM_METHOD.set(v))))
                 .add(toggle("Favour Commissions That Overlap", AetherConfig.DWARVEN_OVERLAP))

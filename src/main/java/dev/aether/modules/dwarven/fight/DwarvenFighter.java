@@ -254,6 +254,20 @@ public final class DwarvenFighter {
         return best;
     }
 
+    // whether any living mob with one of these tag names is within range, used to tell if an event is happening here
+    public static boolean anyVisible(Minecraft client, Set<String> names, double range) {
+        if (client.level == null || client.player == null) return false;
+        for (Entity e : client.level.entitiesForRendering()) {
+            if (!(e instanceof ArmorStand stand) || !stand.hasCustomName() || stand.distanceTo(client.player) > range) continue;
+            Tag tag = parse(stand.getCustomName());
+            if (tag == null || tag.health <= 0) continue;
+            for (String n : names) {
+                if (n.equalsIgnoreCase(tag.name)) return true;
+            }
+        }
+        return false;
+    }
+
     private boolean wanted(String name) {
         for (String m : mobs) {
             if (name.equalsIgnoreCase(m)) return true;
