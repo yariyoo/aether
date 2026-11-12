@@ -66,8 +66,8 @@ class OptimizationTests {
         assertTrue(m.speed() > midway * 0.5, "speed after retarget " + m.speed());
         run(m, 600);
         assertTrue(m.arrived());
-        assertEquals(24f, m.yaw(), 1e-3);
-        assertEquals(36f, m.pitch(), 1e-3);
+        assertEquals(24f, m.yaw(), 0.6);
+        assertEquals(36f, m.pitch(), 0.6);
     }
 
     @Test
@@ -81,7 +81,7 @@ class OptimizationTests {
         free.aim(0, 0, 150, -10, smooth(0, 0));
         float freeWorst = run(free, 600);
         assertTrue(limited.arrived() && free.arrived());
-        assertEquals(150f, limited.yaw(), 1e-3);
+        assertEquals(150f, limited.yaw(), 0.6);
         // under the jerk limit, speed changes less from one frame to the next
         assertTrue(limitedWorst < freeWorst, limitedWorst + " vs " + freeWorst);
         // and a 150 degree turn still takes well under a second
@@ -125,8 +125,8 @@ class OptimizationTests {
             lastK = k;
             run(m, 900);
             assertTrue(m.arrived());
-            assertEquals(target, m.yaw(), 1e-3);
-            assertEquals(10f, m.pitch(), 1e-3);
+            assertEquals(target, m.yaw(), 0.6);
+            assertEquals(10f, m.pitch(), 0.6);
         }
     }
 
@@ -314,5 +314,77 @@ class OptimizationTests {
         // walking past it clears it at once
         t.passed(bad);
         assertEquals(0.0, t.stuckPenalty(bad), 1e-9);
+    }
+
+    @Test
+    void aMiningTurnEndsWithoutAJumpOntoTheTarget() {
+        // the 22:03 recording showed 1-frame ~1 degree hops at the end of turns; the last frame of a normal turn now
+        // moves no more than the frames just before it
+        for (float size : new float[]{3f, 8f, 20f, 45f}) {
+            CameraMotion m = new CameraMotion(5);
+            m.reset(0, 0);
+            m.aim(0, 0, size, size / 3, smooth(12000, 0));
+            List<Float> steps = new ArrayList<>();
+            float lastYaw = 0, lastPitch = 0;
+            for (int i = 0; i < 600 && !m.arrived(); i++) {
+                m.step(1f / 60f);
+                steps.add((float) Math.hypot(m.yaw() - lastYaw, m.pitch() - lastPitch));
+                lastYaw = m.yaw();
+                lastPitch = m.pitch();
+            }
+            assertTrue(m.arrived());
+            int n = steps.size();
+            assertTrue(n >= 3, "frames " + n);
+            float before = Math.max(steps.get(n - 2), steps.get(n - 3));
+            assertTrue(steps.get(n - 1) <= before + 0.02f, size + " deg turn: last frame " + steps.get(n - 1) + " vs " + before);
+        }
+    }
+
+    @Test
+    void anEtherwarpAimStillEndsExactlyOnItsAngle() {
+        CameraProfile precise = new CameraProfile(CameraProfile.Mode.PRECISION, CameraProfile.Easing.SMOOTHERSTEP, 25f, 460f, 1980f, 1650f, 0.35f, 0f,
+                0.5f, true, 13200f, 0f);
+        CameraMotion m = new CameraMotion(9);
+        m.reset(0, 0);
+        m.aim(0, 0, 33.3f, -12.1f, precise);
+        run(m, 900);
+        assertEquals(33.3f, m.yaw(), 1e-3);
+        assertEquals(-12.1f, m.pitch(), 1e-3);
+    }
+
+    // the pathfinder's tracker: each frame closes part of what's left toward a look point moving at speed deg/s
+    private static float[] track(boolean carryExact, float startTarget, float speed, int frames) {
+        double gcd = 0.15;
+        dev.aether.modules.pathfinding.rotation.RotationCarry carry = new dev.aether.modules.pathfinding.rotation.RotationCarry();
+        float player = 0;
+        int stall = 0, worst = 0;
+        float target = startTarget;
+        for (int frame = 0; frame < frames; frame++) {
+            target = startTarget + frame * (speed / 60f);
+            float from = carryExact ? carry.startYaw(player, gcd) : player;
+            float exact = from + (target - from) * (float) (1 - Math.exp(-10.0 / 60.0));
+            carry.hold(exact, 0);
+            float next = dev.aether.modules.pathfinding.rotation.RotationCarry.snap(exact, player, gcd);
+            stall = next == player ? stall + 1 : 0;
+            worst = Math.max(worst, stall);
+            player = next;
+        }
+        return new float[]{worst, Math.abs(target - player)};
+    }
+
+    @Test
+    void carryingTheExactAngleStopsSlowPansFromStallingAndJumping() {
+        // rounding each frame on its own drops anything under half a mouse step: a slow pan sits still for several
+        // frames and then jumps, and a small correction stops short for good. carrying the exact angle fixes both
+        float[] naivePan = track(false, 0f, 2f, 240);
+        float[] carriedPan = track(true, 0f, 2f, 240);
+        // at 2 deg/s a 0.15 degree step physically needs about 5 frames; carried stalls stay at that, rounded ones
+        // run about three times longer before jumping
+        assertTrue(carriedPan[0] <= Math.ceil(0.15 / (2.0 / 60.0)) + 1, "carried pan stall " + carriedPan[0]);
+        assertTrue(naivePan[0] >= 2 * carriedPan[0], "naive pan stall " + naivePan[0] + " vs " + carriedPan[0]);
+        float[] naiveSettle = track(false, 1f, 0f, 120);
+        float[] carriedSettle = track(true, 1f, 0f, 120);
+        assertTrue(naiveSettle[1] > 0.3f, "naive stops short by " + naiveSettle[1]);
+        assertTrue(carriedSettle[1] <= 0.08f, "carried ends " + carriedSettle[1] + " off");
     }
 }

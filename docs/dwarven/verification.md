@@ -249,6 +249,41 @@ Automated tests: LearningTests (11) plus all earlier classes, 99 tests in all, p
 types, and CI compiles the mod. Not verified in game: goblin detection in travel, the combat itself, and whether trips
 get quicker with history. Those need a session log.
 
+## Camera and idle fixes from the 22:03 recording (compared with a Polinex run)
+
+The camera was measured from the recordings themselves, by phase-correlating consecutive 60 fps frames over the
+mining and walking stretches.
+
+| | Polinex | Aether before |
+|---|---|---|
+| mining: separate camera movements per second | 2.8 to 3.8 | 5.9 |
+| mining: typical movement | 75 to 150 ms, 2.5 to 6.5 degrees | 33 ms, 0.9 degrees |
+| mining: mean speed while moving | 55 to 57 deg/s | 39 to 44 deg/s |
+| walking: time holding a heading between corrections | 175 ms | 33 ms |
+| walking: direction reversals per second | 0.26 | 0.81 |
+
+Causes and fixes:
+- walking: the pathfinder's tracker rounded each frame's turn to a mouse step from the player's rounded angle, so
+  anything under half a step was lost. The camera sat still, then jumped one step, and small corrections stopped
+  short for good. The exact angle is now carried between frames (RotationCarry).
+- mining: every turn ended by jumping the last (up to 0.6 degree) gap in one frame. Normal turns now stop where they
+  are once inside the tolerance; only etherwarp's precision aim still lands exactly. The aim phase re-aimed at a
+  different point than the first turn, adding a second small correction; it now re-aims at the same point while
+  that point still hits the block. Mining turns have no bend, at most 0.1 variation, and a 1.4x faster base. The aim
+  spread setting starts at 0 (new key), so turns go to the nearest face.
+- 5.5s standing still after a claim: the tab list still showed the old commission as done, so the macro decided
+  there was nothing to do and waited 5s. While the list refreshes it now checks again every 0.4s.
+- 3.5s standing still on the Rampart's Quarry stairs: one path search toward an unreachable stop ran 300,000
+  iterations. While the macro runs, walk searches stop at 60,000, and the pathfinder's chat lines are muted.
+- Pickobulus was never seen firing in the recording; Polinex fired it every time it was ready, for 26 to 45 blocks.
+  It is now aimed at the visible wanted ore with the most wanted ore within 2.5 blocks (at least 4), and the
+  "destroyed N blocks" result is logged.
+
+Automated tests: 102 pass (aMiningTurnEndsWithoutAJumpOntoTheTarget, anEtherwarpAimStillEndsExactlyOnItsAngle,
+carryingTheExactAngleStopsSlowPansFromStallingAndJumping are new). Not verified in game: whether the camera now
+measures like the Polinex run, and whether Pickobulus fires and how many blocks it gets. A new recording run through
+the same measurement would show it.
+
 ## Known limits
 
 - Stop after X HOTM XP and HOTM XP per hour: the recorded claim rewards list Mithril Powder and Mining Exp, not HOTM
