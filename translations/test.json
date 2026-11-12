@@ -855,5 +855,6 @@
   "text.aether.maximum_exploration_distance": "Maximum Exploration Distance",
   "text.aether.mining_tool_name": "Mining Tool Name",
   "text.aether.longest_single_walk_blocks": "Longest Single Walk Blocks",
-  "text.aether.stop_when_a_commission_area_is_unknown": "Stop When A Commission Area Is Unknown"
+  "text.aether.stop_when_a_commission_area_is_unknown": "Stop When A Commission Area Is Unknown",
+  "text.aether.hud_rate_titanium_and_powder_rows": "HUD Rate, Titanium And Powder Rows"
 }
