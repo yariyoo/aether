@@ -17,6 +17,7 @@ import dev.aether.modules.dwarven.diag.NavReport;
 import dev.aether.modules.dwarven.diag.Ops;
 import dev.aether.modules.dwarven.diag.Sampler;
 import dev.aether.modules.dwarven.event.GoblinRaid;
+import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.modules.dwarven.fight.DwarvenFighter;
 import dev.aether.modules.dwarven.fight.Weapons;
 import dev.aether.modules.dwarven.memory.AreaMemory;
@@ -59,6 +60,9 @@ public final class DwarvenCommissionMacro {
     private static final long STALL_LIMIT_MS = 45_000L;
     private static final int STALL_MIN_BLOCKS = 15;
     private static final long TAB_LAG_MS = 6000L;
+    private static final long CLAIM_REFRESH_MS = 400L;
+    // a 40-block leg or a stand walk needs a few thousand nodes; this many means the stop can't be reached
+    private static final int WALK_SEARCH_LIMIT = 60_000;
     private static final long INPUT_PAUSE_MS = 3000L;
     private static final double ARRIVE_WITHIN = 2.5;
     private static final double PRIOR_RATE = 60.0;
@@ -169,6 +173,8 @@ public final class DwarvenCommissionMacro {
         claims.reset();
         RotationManager.cancelRotation();
         stage = Stage.OFF;
+        PathfindingManager.quiet(false);
+        PathfindingManager.limitWalkSearch(0);
         DwarvenStore.save();
         DwarvenLog.log("stopped: " + reason);
         Ops.cancelAll("macro stopped");
@@ -360,6 +366,10 @@ public final class DwarvenCommissionMacro {
         levelId = System.identityHashCode(client.level);
         MacroStateManager.setCurrentState(MacroState.State.DWARVEN_COMMISSIONS);
         DwarvenLog.log("started at " + client.player.blockPosition().toShortString() + ", zone '" + zone + "'");
+        // every leg and stand walk would otherwise put four lines in chat; a stop the pathfinder can't reach is
+        // given up on after a fraction of a second rather than the 3.5s search seen in the 22:03 video
+        PathfindingManager.quiet(true);
+        PathfindingManager.limitWalkSearch(WALK_SEARCH_LIMIT);
         enter(Stage.VALIDATE, "start");
     }
 
@@ -466,6 +476,13 @@ public final class DwarvenCommissionMacro {
         if (choice == null) {
             if (!unknown.isEmpty() && AetherConfig.DWARVEN_STOP_UNKNOWN_AREA.get()) {
                 halt(client, "no known way to " + String.join(", ", unknown));
+                return;
+            }
+            // right after a claim the tab list still shows the old commission as done and the new one isn't listed
+            // yet; that isn't "nothing to do", so check again shortly instead of waiting five seconds (22:03 video)
+            boolean refreshing = now - lastClaimAt < TAB_LAG_MS || commissions.stream().anyMatch(DwarvenCommission::done);
+            if (refreshing) {
+                pause(CLAIM_REFRESH_MS, "waiting for the new commission to show up in the tab list");
                 return;
             }
             String why = whyNothing(commissions, unknown);

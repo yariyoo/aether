@@ -367,7 +367,7 @@ public final class PathfindingManager {
         finalY = checker.isSolid(x, y, z) ? y + 1 : y;
 
         if (mc.player != null) {
-            ClientUtils.sendMessage("\u00A7ePath test: running A* to "
+            say("\u00A7ePath test: running A* to "
                             + x + ", " + finalY + ", " + z + "...", false);
         }
 
@@ -410,7 +410,7 @@ public final class PathfindingManager {
             mc.execute(() -> {
                 if (finalResult == null) {
                     if (mc.player != null) {
-                        ClientUtils.sendMessage("\u00A7cPath test error!", false);
+                        say("\u00A7cPath test error!", false);
                     }
                     return;
                 }
@@ -439,7 +439,7 @@ public final class PathfindingManager {
                 long elapsedMs = System.currentTimeMillis() - startMs;
 
                 if (mc.player != null) {
-                    ClientUtils.sendMessage("\u00A7ePath test result: "
+                    say("\u00A7ePath test result: "
                                     + typeStr
                                     + "\u00A76 | explored: " + pathfinder.getExploredCount()
                                     + " | waypoints: " + pathLen
@@ -499,7 +499,7 @@ public final class PathfindingManager {
         executor.setPreciseGoalTolerance(0.25);
 
         if (mc.player != null) {
-            ClientUtils.sendMessage("\u00A77Greenhouse path: direct walk to target.", false);
+            say("\u00A77Greenhouse path: direct walk to target.", false);
         }
     }
 
@@ -515,7 +515,7 @@ public final class PathfindingManager {
         disableTransientDebugRendering();
         PathVisualizer.clear();
         if (announce && wasNavigating && mc.player != null) {
-            ClientUtils.sendMessage("\u00A7eNavigation stopped.", false);
+            say("\u00A7eNavigation stopped.", false);
         }
     }
 
@@ -682,7 +682,7 @@ public final class PathfindingManager {
         goalZ = z;
 
         if (mc.player != null && (!fly || PathVisualizer.isTransientSessionActive() && flyRepathCount == 0)) {
-            ClientUtils.sendMessage("\u00A7eFinding path to "
+            say("\u00A7eFinding path to "
                             + x + ", " + finalY + ", " + z + "...", false);
         }
 
@@ -694,7 +694,7 @@ public final class PathfindingManager {
                 activeMode = NavigationMode.NONE;
                 clearTransientDebugRenderingIfActive();
                 if (mc.player != null) {
-                    ClientUtils.sendMessage("\u00A7cCannot fly pathfind without a loaded world.", false);
+                    say("\u00A7cCannot fly pathfind without a loaded world.", false);
                 }
                 return;
             }
@@ -706,7 +706,7 @@ public final class PathfindingManager {
                 activeMode = NavigationMode.NONE;
                 clearTransientDebugRenderingIfActive();
                 ClientUtils.sendDebugMessage("No reachable fly route start near the player.");
-                if (announce) ClientUtils.sendMessage("\u00A7cNo fly path found!", false);
+                if (announce) say("\u00A7cNo fly path found!", false);
                 return;
             }
 
@@ -746,6 +746,27 @@ public final class PathfindingManager {
         }
     }
 
+    // a caller walking many short legs (the dwarven navigator) can keep its own messages out of chat and cap how
+    // long a search for an unreachable stop may run; 0 restores the usual limit
+    private static volatile boolean quiet;
+    private static volatile int walkIterationLimit;
+
+    public static void quiet(boolean on) {
+        quiet = on;
+    }
+
+    public static void limitWalkSearch(int iterations) {
+        walkIterationLimit = Math.max(0, iterations);
+    }
+
+    private static void say(String message) {
+        say(message, false);
+    }
+
+    private static void say(String message, boolean actionBar) {
+        if (!quiet) ClientUtils.sendMessage(message, actionBar);
+    }
+
     private static PathfinderConfiguration createWalkPathfinderConfiguration(WalkabilityChecker checker, boolean async) {
         return PathfinderConfiguration.builder()
                 .provider(new MinecraftNavigationProvider(checker))
@@ -753,7 +774,7 @@ public final class PathfindingManager {
                         AetherConfig.PATHFINDER_MAX_JUMP_HEIGHT.get())))
                 .neighborStrategy(NeighborStrategies.horizontalDiagonalAndVertical(
                         AetherConfig.PATHFINDER_MAX_JUMP_HEIGHT.get()))
-                .maxIterations(300000)
+                .maxIterations(walkIterationLimit > 0 ? walkIterationLimit : 300000)
                 .maxLength(25000)
                 .async(async)
                 .fallback(true)
@@ -786,14 +807,14 @@ public final class PathfindingManager {
         WalkabilityChecker checker = new WalkabilityChecker(mc.level);
         PathPosition target = EtherwarpHelper.resolveTargetFeet(checker, x, y, z);
         if (target == null) {
-            ClientUtils.sendMessage("\u00A7cEtherwarp target must have enough crouched headroom above it.", false);
+            say("\u00A7cEtherwarp target must have enough crouched headroom above it.", false);
             if (etherwarpFailureCallback != null) {
                 etherwarpFailureCallback.run();
             }
             return;
         }
         if (GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(mc) < 0) {
-            ClientUtils.sendMessage("\u00A7cNo hotbar AOTV with Ether Transmission found.", false);
+            say("\u00A7cNo hotbar AOTV with Ether Transmission found.", false);
             if (etherwarpFailureCallback != null) {
                 etherwarpFailureCallback.run();
             }
@@ -818,7 +839,7 @@ public final class PathfindingManager {
             activeMode = NavigationMode.NONE;
             clearTransientDebugRenderingIfActive();
             if (mc.player != null) {
-                ClientUtils.sendMessage("\u00A7cEtherwarp target no longer has enough crouched headroom.", false);
+                say("\u00A7cEtherwarp target no longer has enough crouched headroom.", false);
             }
             if (etherwarpFailureCallback != null) {
                 etherwarpFailureCallback.run();
@@ -848,7 +869,7 @@ public final class PathfindingManager {
                     ? String.format("\u00A7eRepathing etherwarp route from current position (%d/%d)...",
                     etherwarpRepathCount, ETHERWARP_REPATH_MAX_RETRIES)
                     : "\u00A7eFinding etherwarp path to " + goalX + ", " + goalY + ", " + goalZ + "...";
-            ClientUtils.sendMessage(message, false);
+            say(message, false);
         }
 
         long startMs = System.currentTimeMillis();
@@ -886,7 +907,7 @@ public final class PathfindingManager {
             activeMode = NavigationMode.NONE;
             clearTransientDebugRenderingIfActive();
             if (mc.player != null) {
-                ClientUtils.sendMessage("\u00A7cNo etherwarp path found!", false);
+                say("\u00A7cNo etherwarp path found!", false);
             }
             if (etherwarpFailureCallback != null) {
                 etherwarpFailureCallback.run();
@@ -910,7 +931,7 @@ public final class PathfindingManager {
             String assistPrefix = plan.usesWalkAssist()
                     ? String.format("walk %.1f blk -> ", plan.walkDistance())
                     : "";
-            ClientUtils.sendMessage("\u00A7aEtherwarp path found ("
+            say("\u00A7aEtherwarp path found ("
                             + assistPrefix
                             + Math.max(0, path.size() - 1) + " warps"
                             + " | explored: " + plan.exploredCount()
@@ -1080,7 +1101,7 @@ public final class PathfindingManager {
         PathVisualizer.setCameraPath(Collections.emptyList());
 
         if (mc.player != null) {
-            ClientUtils.sendMessage(String.format("\u00A7eWalking %.1f blocks to an etherwarp launch point...", plan.walkDistance()),
+            say(String.format("\u00A7eWalking %.1f blocks to an etherwarp launch point...", plan.walkDistance()),
                     false);
         }
 
@@ -1137,7 +1158,7 @@ public final class PathfindingManager {
                     : "timed out";
             if (etherwarpRepathCount >= ETHERWARP_REPATH_MAX_RETRIES) {
                 if (mc != null && mc.player != null) {
-                    ClientUtils.sendMessage("\u00A7cEtherwarp " + failureLabel + " after "
+                    say("\u00A7cEtherwarp " + failureLabel + " after "
                                     + ETHERWARP_REPATH_MAX_RETRIES + " replans. Cancelling.",
                             false);
                 }
@@ -1193,7 +1214,7 @@ public final class PathfindingManager {
             activeMode = NavigationMode.NONE;
             clearTransientDebugRenderingIfActive();
             if (mc.player != null) {
-                ClientUtils.sendMessage("\u00A7cNo path found!", false);
+                say("\u00A7cNo path found!", false);
             }
             if (walkFailureCallback != null) {
                 walkFailureCallback.run();
@@ -1213,7 +1234,7 @@ public final class PathfindingManager {
             activeMode = NavigationMode.NONE;
             clearTransientDebugRenderingIfActive();
             if (mc.player != null) {
-                ClientUtils.sendMessage("\u00A7eWalk path result was partial. Falling back to the next recovery path...",
+                say("\u00A7eWalk path result was partial. Falling back to the next recovery path...",
                         false);
             }
             if (walkFailureCallback != null) {
@@ -1239,13 +1260,13 @@ public final class PathfindingManager {
 
         String walkingColor = result.successful() ? "\u00A7a" : "\u00A7e";
         if (mc.player != null) {
-            ClientUtils.sendMessage("§ePath result: " + resultTypeStr
+            say("§ePath result: " + resultTypeStr
                             + "§e | explored: " + exploredCount
                             + " | waypoints: " + pathLen
                             + String.format(" | dist: %.1f blk", pathBlocks)
                             + " | time: " + elapsedMs + "ms",
                     false);
-            ClientUtils.sendMessage(walkingColor + "Path found (" + nodes.size() + " waypoints). Walking...",
+            say(walkingColor + "Path found (" + nodes.size() + " waypoints). Walking...",
                     false);
         }
 
@@ -1289,7 +1310,7 @@ public final class PathfindingManager {
             clearTransientDebugRenderingIfActive();
             ClientUtils.sendDebugMessage("No fly path found.");
             if (mc.player != null && announce) {
-                ClientUtils.sendMessage("\u00A7cNo fly path found!", false);
+                say("\u00A7cNo fly path found!", false);
             }
             return;
         }
@@ -1311,7 +1332,7 @@ public final class PathfindingManager {
             clearTransientDebugRenderingIfActive();
             ClientUtils.sendDebugMessage("Fly path build failed.");
             if (mc.player != null && announce) {
-                ClientUtils.sendMessage("\u00A7cFly path build failed!", false);
+                say("\u00A7cFly path build failed!", false);
             }
             return;
         }
@@ -1326,13 +1347,13 @@ public final class PathfindingManager {
         ClientUtils.sendDebugMessage("fly path built: " + smoothed.size() + " waypoint(s), "
                 + exploredCount + " explored, " + elapsedMs + "ms search");
         if (mc.player != null && PathVisualizer.isTransientSessionActive() && flyRepathCount == 0) {
-            ClientUtils.sendMessage("\u00A7eFly path result: " + resultTypeStr
+            say("\u00A7eFly path result: " + resultTypeStr
                             + "\u00A7e | explored: " + exploredCount
                             + " | waypoints: " + smoothed.size()
                             + String.format(" | dist: %.1f blk", pathBlocks)
                             + " | time: " + elapsedMs + "ms",
                     false);
-            ClientUtils.sendMessage("\u00A7aFly path found (" + smoothed.size()
+            say("\u00A7aFly path found (" + smoothed.size()
                             + " waypoints). Flying...",
                     false);
         }
