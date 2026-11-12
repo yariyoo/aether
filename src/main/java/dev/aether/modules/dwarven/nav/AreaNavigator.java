@@ -65,6 +65,10 @@ public final class AreaNavigator {
     private long hopSince;
     private int sneakTicks;
     private boolean hopAligned;
+    private boolean partialRoute;
+    private BlockPos tripStart;
+    // beyond this, with no known ground to follow, a single pathfinder walk isn't worth trying
+    private static final double MAX_UNKNOWN_WALK = 40.0;
     private boolean hopWalking;
     private static final java.util.Map<TrailMemory.Hop, Long> bannedHops = new java.util.HashMap<>();
     private int legAt;
@@ -121,8 +125,10 @@ public final class AreaNavigator {
         this.failure = null;
         this.status = Status.RUNNING;
         BlockPos feet = client.player.blockPosition();
+        tripStart = feet;
         BlockPos forge = forgeLanding(feet);
-        if (forge != null && AetherConfig.DWARVEN_FORGE_WARP.get()
+        boolean atForge = forge != null && Math.sqrt(forge.distSqr(feet)) < AT_FORGE;
+        if (forge != null && !atForge && AetherConfig.DWARVEN_FORGE_WARP.get()
                 && WARP_OVERHEAD_SECONDS + walkSeconds(forge, goal) + 5 < walkSeconds(feet, goal)) {
             DwarvenLog.log("nav: the forge is the quicker way to " + label + ", warping");
             warp(client);
@@ -148,12 +154,26 @@ public final class AreaNavigator {
             route.addAll(DwarvenStore.TRAILS.waypoints(feet, goal, JOIN, AetherConfig.DWARVEN_LEG_LENGTH.get(), kinds, bannedHops.keySet()));
         }
         boolean known = !route.isEmpty();
-        if (route.isEmpty() || route.get(route.size() - 1).pos().distSqr(goal) > 4) route.add(new Waypoint(goal, null));
+        partialRoute = false;
+        if (!known && AetherConfig.DWARVEN_LEARN_TRAILS.get()) {
+            // a failed teleport can cut the full route; known ground still gets us closer, so use as much of it as works
+            route.addAll(DwarvenStore.TRAILS.waypointsToward(feet, goal, JOIN, AetherConfig.DWARVEN_LEG_LENGTH.get(), kinds, bannedHops.keySet()));
+            partialRoute = !route.isEmpty();
+        }
+        double direct = Math.sqrt(feet.distSqr(goal));
+        if (route.isEmpty() && direct > MAX_UNKNOWN_WALK) {
+            // the pathfinder can't reliably cross areas in one go, and this goal is beyond what's loaded around us anyway
+            routeFailed(client, String.format("no known route, and %.0f blocks is too far for one pathfinder walk", direct));
+            return;
+        }
+        if (!partialRoute && (route.isEmpty() || route.get(route.size() - 1).pos().distSqr(goal) > 4)) route.add(new Waypoint(goal, null));
         legs = route;
         legAt = 0;
         long hopCount = route.stream().filter(w -> w.hop() != null).count();
-        DwarvenLog.log(String.format("nav: to %s at %s, %.0f blocks, %s", label, goal.toShortString(), Math.sqrt(feet.distSqr(goal)),
-                known ? (legs.size() + " legs along known ground, " + hopCount + " of them teleports") : "no known trail, pathfinding straight there"));
+        String how = partialRoute ? legs.size() + " legs as far as known ground goes (" + hopCount + " teleports), then replanning"
+                : known ? legs.size() + " legs along known ground, " + hopCount + " of them teleports"
+                : "no known trail, short enough to pathfind";
+        DwarvenLog.log(String.format("nav: route to %s at %s, %.0f blocks: %s", label, goal.toShortString(), direct, how));
         startLeg(client);
     }
 
@@ -210,6 +230,7 @@ public final class AreaNavigator {
         }
         if (Math.sqrt(feet.distSqr(goal)) <= arriveWithin) {
             PathfindingManager.stop();
+            NavFailures.succeeded(goal);
             status = Status.ARRIVED;
             DwarvenLog.log("nav: reached " + label + " at " + feet.toShortString());
             return;
@@ -217,6 +238,12 @@ public final class AreaNavigator {
         BlockPos to = legs.get(legAt).pos();
         double left = Math.sqrt(feet.distSqr(to));
         boolean lastLeg = legAt == legs.size() - 1;
+        if (lastLeg && partialRoute && (result.get() == 1 || left <= LEG_REACHED)) {
+            PathfindingManager.stop();
+            attempts = 0;
+            plan(client);
+            return;
+        }
         if (result.get() == 1 || (!lastLeg && left <= LEG_REACHED)) {
             if (lastLeg) {
                 // the pathfinder says done but we're not within range; treat it like any other miss
@@ -265,8 +292,15 @@ public final class AreaNavigator {
             warp(client);
             return;
         }
+        routeFailed(client, why);
+    }
+
+    private void routeFailed(Minecraft client, String why) {
+        PathfindingManager.stop();
         failure = why;
         status = Status.FAILED;
+        NavFailures.Failure f = NavFailures.record(goal, tripStart == null ? client.player.blockPosition() : tripStart, why, System.currentTimeMillis());
+        DwarvenLog.log("nav: route to " + label + " failed: " + why + " (" + f.count() + " time" + (f.count() == 1 ? "" : "s") + " from here)");
     }
 
     private void warp(Minecraft client) {
@@ -322,7 +356,17 @@ public final class AreaNavigator {
                 double off = pos.distanceTo(new Vec3(hop.toX(), hop.toY(), hop.toZ()));
                 DwarvenStore.TRAILS.interrupted();
                 if (off > HOP_LANDING_TOLERANCE) {
-                    hopFailed(client, hop, String.format("landed %.1f blocks from the recorded spot", off));
+                    double before = hopLaunch.distanceTo(Vec3.atCenterOf(goal));
+                    double after = pos.distanceTo(Vec3.atCenterOf(goal));
+                    if (after < before - 2.0) {
+                        // off the recorded spot but still progress; plan on from where we actually are
+                        DwarvenLog.log(String.format("nav: %s landed %.1f blocks off the recorded spot but %.0f blocks closer, replanning from here",
+                                hop.kind().name().toLowerCase(), off, before - after));
+                        attempts = 0;
+                        plan(client);
+                        return;
+                    }
+                    hopFailed(client, hop, String.format("landed %.1f blocks from the recorded spot and no closer", off));
                     return;
                 }
                 legAt++;

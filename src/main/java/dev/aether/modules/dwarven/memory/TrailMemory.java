@@ -153,6 +153,32 @@ public final class TrailMemory {
         int start = nearest(from, joinWithin);
         int goal = nearest(to, joinWithin);
         if (start < 0 || goal < 0 || start == goal) return List.of();
+        int[] prev = search(start, hopKinds, bannedHops);
+        if (prev[goal] < 0) return List.of();
+        return thin(pathTo(prev, goal), stride);
+    }
+
+    // when known ground doesn't reach the goal, go as far toward it as it does; empty when that's no closer than here
+    public List<Waypoint> waypointsToward(BlockPos from, BlockPos to, double joinWithin, double stride, Set<HopKind> hopKinds,
+                                          Set<Hop> bannedHops) {
+        int start = nearest(from, joinWithin);
+        if (start < 0) return List.of();
+        int[] prev = search(start, hopKinds, bannedHops);
+        int best = start;
+        double bestDistance = crumbs.get(start).distSqr(to);
+        for (int i = 0; i < crumbs.size(); i++) {
+            if (prev[i] < 0) continue;
+            double d = crumbs.get(i).distSqr(to);
+            if (d < bestDistance) {
+                bestDistance = d;
+                best = i;
+            }
+        }
+        if (best == start || crumbs.get(best).distSqr(to) >= from.distSqr(to) - 16) return List.of();
+        return thin(pathTo(prev, best), stride);
+    }
+
+    private int[] search(int start, Set<HopKind> hopKinds, Set<Hop> bannedHops) {
         double[] cost = new double[crumbs.size()];
         int[] prev = new int[crumbs.size()];
         Arrays.fill(cost, Double.MAX_VALUE);
@@ -164,7 +190,6 @@ public final class TrailMemory {
             double[] top = open.poll();
             int at = (int) top[1];
             if (top[0] > cost[at]) continue;
-            if (at == goal) break;
             for (int next : links.get(at)) {
                 Hop hop = hops.get(edge(at, next));
                 if (hop != null && (!hopKinds.contains(hop.kind()) || bannedHops.contains(hop))) continue;
@@ -177,10 +202,17 @@ public final class TrailMemory {
                 }
             }
         }
-        if (prev[goal] < 0) return List.of();
+        return prev;
+    }
+
+    private static List<Integer> pathTo(int[] prev, int goal) {
         List<Integer> path = new ArrayList<>();
         for (int at = goal; at >= 0; at = prev[at]) path.add(at);
         Collections.reverse(path);
+        return path;
+    }
+
+    private List<Waypoint> thin(List<Integer> path, double stride) {
         List<Waypoint> thinned = new ArrayList<>();
         double since = 0;
         for (int i = 1; i < path.size(); i++) {
