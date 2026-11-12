@@ -14,6 +14,7 @@ import dev.aether.modules.dwarven.world.StandPlanner;
 import dev.aether.modules.dwarven.world.Vein;
 import dev.aether.modules.dwarven.world.VeinFinder;
 import dev.aether.modules.dwarven.world.WalkReach;
+import dev.aether.modules.dwarven.diag.Ops;
 import dev.aether.modules.failsafe.FailsafeManager;
 import dev.aether.modules.pathfinding.PathfindingManager;
 import dev.aether.modules.rotation.RotationManager;
@@ -46,6 +47,11 @@ public final class DwarvenMiner {
     private static final int REGION_FAIL_RADIUS = 5;
     private static final int REGION_FAILS = 2;
     private boolean restartedDig;
+    private boolean digStartSeen;
+    private String lastProblem;
+    private Ops.Op walkOp;
+    private final ApproachMemory approaches = new ApproachMemory();
+    private int rejectedApproach;
     private final Map<Long, Integer> regionFails = new HashMap<>();
     private static final String[] TOOL_WORDS = {"drill", "pickaxe", "gauntlet", "pickonimbus", "mithril pick"};
     private static final long AIM_LIMIT_MS = 1500L;
@@ -208,6 +214,27 @@ public final class DwarvenMiner {
     private void enter(Phase next) {
         phase = next;
         phaseSince = System.currentTimeMillis();
+        digStartSeen = false;
+    }
+
+    // what the miner is doing right now, for the diagnostic snapshot
+    public void describe(StringBuilder b, Minecraft client, long now) {
+        b.append(" miner=").append(phase.name().toLowerCase());
+        if (phase == Phase.IDLE) return;
+        if (target != null) {
+            b.append(" block=").append(target.toShortString()).append(' ').append(targetKind);
+            b.append(String.format(" dblock=%.1f", Math.sqrt(target.distToCenterSqr(client.player.getEyePosition()))));
+            b.append(" ray=").append(crosshairOn(client, target));
+        }
+        if (phase == Phase.WALK && walkGoal != null) {
+            b.append(" stand=").append(walkGoal.toShortString()).append(String.format(" dstand=%.1f", walkBest));
+            b.append(" noProgressMs=").append(now - walkProgressAt).append(walkStarted ? "" : "(starting)");
+        }
+        boolean held = client.options.keyAttack.isDown();
+        boolean destroying = client.gameMode != null && client.gameMode.isDestroying();
+        b.append(" attack=").append(held ? "held" : "up").append(destroying ? "/destroying" : "");
+        if (phase == Phase.DIG) b.append(" digMs=").append(now - phaseSince).append(" timeoutLeftMs=").append(Math.max(0, blockTimeoutMs() - (now - phaseSince)));
+        if (lastProblem != null) b.append(" lastProblem=\"").append(lastProblem).append('"');
     }
 
     private void pick(Minecraft client, OreWorld world, long now) {
@@ -330,6 +357,7 @@ public final class DwarvenMiner {
                 DwarvenLog.log("miner: " + targetKind + " at " + target.toShortString() + " became " + nowKind + ", mining it too");
                 targetKind = nowKind;
                 phaseSince = now;
+                digStartSeen = false;
                 releaseTick = true;
                 MacroInput.setAttack(client.options.keyAttack, false);
                 return;
@@ -345,10 +373,16 @@ public final class DwarvenMiner {
             return;
         }
         boolean destroying = client.gameMode != null && client.gameMode.isDestroying();
+        if (destroying && !digStartSeen) {
+            digStartSeen = true;
+            Ops.record("mine.dig.start", now - phaseSince);
+        }
         if (!destroying && !restartedDig && now - phaseSince > DIG_START_GRACE_MS) {
             // the button is down but the game never began breaking the block; press again instead of waiting out the timeout
             restartedDig = true;
-            DwarvenLog.log("miner: " + digState(client) + " on " + targetKind + " at " + target.toShortString() + ", restarting the dig");
+            lastProblem = digState(client);
+            Ops.record("mine.dig.restart", now - phaseSince);
+            DwarvenLog.log("miner: " + lastProblem + " on " + targetKind + " at " + target.toShortString() + ", restarting the dig");
             MacroInput.setAttack(client.options.keyAttack, false);
             releaseTick = true;
             phaseSince = now;
@@ -356,6 +390,8 @@ public final class DwarvenMiner {
         }
         if (now - phaseSince > blockTimeoutMs()) {
             String why = destroying ? "dig ran but the block didn't break" : digState(client);
+            lastProblem = why;
+            Ops.record("mine.dig.timeout", now - phaseSince);
             releaseAttack(client);
             skip.put(target, now + AetherConfig.DWARVEN_BLACKLIST_SECONDS.get() * 1000L);
             timeoutsInARow++;
@@ -386,6 +422,7 @@ public final class DwarvenMiner {
 
     private void recordBreak(long now) {
         long took = now - phaseSince;
+        Ops.record("mine.break", took);
         mined++;
         timeoutsInARow = 0;
         moveFailures = 0;
@@ -447,6 +484,7 @@ public final class DwarvenMiner {
         } else if (best != null && rejectedUnwalkable > 0) {
             DwarvenLog.log("miner: skipped " + rejectedUnwalkable + " stands there's no walk to from here");
         }
+        if (rejectedApproach > 0) DwarvenLog.log("miner: skipped " + rejectedApproach + " stands behind a spot a walk already got stuck at");
         planMoveDone(client, world, now, feet, ore, veins, best);
     }
 
@@ -454,6 +492,7 @@ public final class DwarvenMiner {
 
     private StandPlanner.Stand pickStand(OreWorld world, List<Vein> veins, List<BlockPos> ore, double reach, BlockPos feet, Set<BlockPos> walkable) {
         rejectedUnwalkable = 0;
+        rejectedApproach = 0;
         StandPlanner.Stand best = null;
         double bestScore = 0;
         for (int i = 0; i < Math.min(VEINS_PLANNED, veins.size()); i++) {
@@ -465,6 +504,10 @@ public final class DwarvenMiner {
                         && Math.abs(stand.feet().getZ() - feet.getZ()) < WALK_CHECK_RADIUS - 1;
                 if (walkable != null && insideCheck && !walkable.contains(stand.feet())) {
                     rejectedUnwalkable++;
+                    continue;
+                }
+                if (approaches.blocks(feet, stand.feet(), System.currentTimeMillis())) {
+                    rejectedApproach++;
                     continue;
                 }
                 double value = stand.reachable().size() + (preferTitanium ? TITANIUM_WEIGHT * stand.titanium() : 0);
@@ -545,6 +588,8 @@ public final class DwarvenMiner {
         walkFrom = client.player.blockPosition();
         AtomicInteger result = new AtomicInteger();
         walkResult = result;
+        walkOp = Ops.begin("mine.walk", (long) (walkBest / 4.3 * 1000) + 1500);
+        walkOp.detail("to stand " + goal.toShortString());
         PathfindingManager.startConfiguredWalk(client, goal.getX(), goal.getY(), goal.getZ(),
                 () -> result.compareAndSet(0, 1), () -> result.compareAndSet(0, 2), true, 0.6, false, true);
         enter(Phase.WALK);
@@ -555,6 +600,7 @@ public final class DwarvenMiner {
         double left = Math.sqrt(walkGoal.distSqr(feet));
         if (walkResult.get() == 1 || left <= 1.2) {
             if (walkResult.get() != 1) PathfindingManager.stop();
+            if (walkOp != null) walkOp.end("reached");
             spot = null;
             movedSinceDry = true;
             enter(Phase.PICK);
@@ -563,6 +609,7 @@ public final class DwarvenMiner {
         if (left < walkBest - 0.5) {
             walkBest = left;
             walkProgressAt = now;
+            if (walkOp != null) walkOp.progress();
         }
         // until the first steps, the pathfinder may still be searching, which isn't being stuck
         if (!walkStarted && walkFrom != null && Math.sqrt(walkFrom.distSqr(feet)) >= 1) {
@@ -575,6 +622,11 @@ public final class DwarvenMiner {
         if (walkResult.get() == 2 || stuck) {
             PathfindingManager.stop();
             long block = AetherConfig.DWARVEN_BLACKLIST_SECONDS.get() * 1000L;
+            if (stuck) Ops.record("mine.stuck", now - walkProgressAt);
+            if (walkOp != null) Ops.record("mine.walk.failed", walkOp.end(stuck ? "stuck" : "no path"));
+            lastProblem = "couldn't reach " + walkGoal.toShortString();
+            // stands past the place we got stuck, approached from here, are behind the same obstruction
+            if (walkFrom != null) approaches.stuck(walkFrom, feet, now + block);
             // the stands around one we couldn't reach are usually just as unreachable; drop the patch, not one block
             blockAround(walkGoal, STAND_FAIL_RADIUS, now + block);
             long region = BlockPos.asLong(walkGoal.getX() >> 3, walkGoal.getY() >> 3, walkGoal.getZ() >> 3);
