@@ -25,7 +25,7 @@ public class DwarvenHudElement extends HudElement {
     @Override public void    savePosition()   { AetherConfig.save(); }
 
     private static int rows() {
-        return AetherConfig.DWARVEN_HUD_DEBUG.get() ? 10 : 7;
+        return 7 + (AetherConfig.DWARVEN_HUD_STATS.get() ? 3 : 0) + (AetherConfig.DWARVEN_HUD_DEBUG.get() ? 3 : 0);
     }
 
     @Override
@@ -47,6 +47,18 @@ public class DwarvenHudElement extends HudElement {
         String rate = sessionMs < 180_000L ? "-" : String.format("%.1f/h", done / (sessionMs / 3_600_000.0));
         y = row(nvg, y, "Completed", done + "  (" + rate + ")", Theme.HUD_SUCCESS);
         y = row(nvg, y, "Blocks mined", mined + "  (" + DwarvenCommissionMacro.titaniumThisSession() + " titanium)", Theme.HUD_VALUE);
+        if (AetherConfig.DWARVEN_HUD_STATS.get()) {
+            double minutes = sessionMs / 60_000.0;
+            double hours = sessionMs / 3_600_000.0;
+            boolean settled = sessionMs >= 180_000L;
+            y = row(nvg, y, "Mining rate", settled ? String.format("%.0f blocks/min", mined / minutes) : "-", Theme.HUD_VALUE);
+            int titanium = DwarvenCommissionMacro.titaniumThisSession();
+            String tiRate = titanium == 0 ? "none yet" : String.format("1 per %.0f blocks", (double) mined / titanium);
+            y = row(nvg, y, "Titanium", tiRate + ", " + DwarvenCommissionMacro.mithrilSinceTitanium() + " since last", Theme.HUD_VALUE);
+            var r = DwarvenCommissionMacro.rewards();
+            String hotm = r.hotmExp() > 0 ? String.format(", %s HOTM", compact(r.hotmExp())) : "";
+            y = row(nvg, y, "Powder", compact(r.mithrilPowder()) + (settled ? " (" + compact(r.mithrilPowder() / hours) + "/h)" : "") + hotm, Theme.HUD_VALUE);
+        }
         if (AetherConfig.DWARVEN_HUD_DEBUG.get()) {
             BlockPos target = DwarvenCommissionMacro.hudTarget();
             y = row(nvg, y, "Target", target == null ? "-" : target.toShortString(), Theme.HUD_VALUE);
@@ -59,6 +71,12 @@ public class DwarvenHudElement extends HudElement {
     private float row(NVGRenderer nvg, float y, String label, String value, int color) {
         HudStyle.row(nvg, HudStyle.PAD, y, W - HudStyle.PAD * 2, label, value, LABEL_SZ, color);
         return y + ROW_H;
+    }
+
+    private static String compact(double v) {
+        if (v >= 1_000_000) return String.format("%.1fm", v / 1_000_000);
+        if (v >= 1_000) return String.format("%.1fk", v / 1_000);
+        return String.format("%.0f", v);
     }
 
     private static String time(long ms) {

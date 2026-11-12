@@ -111,6 +111,7 @@ public final class DwarvenCommissionsRegistryProvider extends AbstractMiningRegi
                 .add(slider("Failed Target Blacklist Seconds", 5, 600, AetherConfig.DWARVEN_BLACKLIST_SECONDS))
                 .add(toggle("Stop When A Commission Area Is Unknown", AetherConfig.DWARVEN_STOP_UNKNOWN_AREA))
                 .add(toggle("Show Dwarven HUD", AetherConfig.SHOW_DWARVEN_HUD))
+                .add(toggle("HUD Rate, Titanium And Powder Rows", AetherConfig.DWARVEN_HUD_STATS))
                 .add(toggle("HUD Debug Rows", AetherConfig.DWARVEN_HUD_DEBUG));
 
         return MainGUIRegistry.subTab("Dwarven Commissions", "Dwarven Mines commission macro",

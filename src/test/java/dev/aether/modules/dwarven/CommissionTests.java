@@ -165,4 +165,14 @@ class CommissionTests {
         assertFalse(dev.aether.modules.dwarven.event.GoblinRaid.isRaidCommission("Raffle"));
         assertTrue(CombatTarget.of("Goblin Raid").mobs().contains("Weakling"));
     }
+
+    @Test
+    void readsCommissionRewardsOffTheItem() {
+        var lore = List.of("Mine 250 Mithril", "", "COMPLETED", "", "Rewards", "- 1,600 Mithril Powder (Daily Bonus)",
+                "- 5,000 Mithril Powder (Daily Grind HOTM Bonus)", "- 1,000 Mithril Powder", "- +7.5k Mining Exp", "", "Click to claim rewards!");
+        var tally = dev.aether.modules.dwarven.claim.Rewards.parse(lore);
+        assertEquals(7_600.0, tally.mithrilPowder());
+        assertEquals(7_500.0, tally.miningExp());
+        assertEquals(0.0, tally.hotmExp());
+    }
 }

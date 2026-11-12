@@ -45,6 +45,8 @@ public final class ClaimManager {
     private long holdUntil;
     private final Map<Integer, Integer> clicks = new HashMap<>();
     private Entity npc;
+    private Rewards.Tally earned = Rewards.NONE;
+    private final Map<Integer, Rewards.Tally> pending = new HashMap<>();
 
     public static boolean hasPigeon(Minecraft client) {
         return GearManager.findHotbarItemSlot(client, PIGEON) >= 0;
@@ -58,6 +60,11 @@ public final class ClaimManager {
         return claimed;
     }
 
+    // what this claim run paid out, counted only for slots that really stopped reading as claimable
+    public Rewards.Tally earned() {
+        return earned;
+    }
+
     public boolean running() {
         return status == Status.RUNNING;
     }
@@ -66,6 +73,8 @@ public final class ClaimManager {
         claimed = 0;
         opens = 0;
         clicks.clear();
+        pending.clear();
+        earned = Rewards.NONE;
         if (GearManager.findHotbarItemSlot(client, PIGEON) < 0) {
             status = Status.NO_PIGEON;
             return;
@@ -81,6 +90,8 @@ public final class ClaimManager {
         claimed = 0;
         opens = 0;
         clicks.clear();
+        pending.clear();
+        earned = Rewards.NONE;
         npc = emissary;
         restoreSlot = -1;
         status = Status.RUNNING;
@@ -181,15 +192,20 @@ public final class ClaimManager {
             }
             // a slot is only counted as claimed once it stops reading as claimable on a later pass
             clicks.put(i, tries + 1);
+            if (tries == 0) pending.put(i, Rewards.parse(text(stack)));
             DwarvenLog.log("claim: clicking " + stack.getHoverName().getString() + " in slot " + i + (tries > 0 ? " again" : ""));
             ClientUtils.performSlotClick(screen, i, 0, ContainerInput.PICKUP);
             stepSince = now;
             return;
         }
         claimed = 0;
+        earned = Rewards.NONE;
         for (Map.Entry<Integer, Integer> e : clicks.entrySet()) {
             ItemStack stack = slots.get(e.getKey()).getItem();
-            if (stack.isEmpty() || !CommissionReader.isClaimable(text(stack))) claimed++;
+            if (stack.isEmpty() || !CommissionReader.isClaimable(text(stack))) {
+                claimed++;
+                earned = earned.plus(pending.getOrDefault(e.getKey(), Rewards.NONE));
+            }
         }
         if (stubborn) DwarvenLog.log("claim: a commission still reads as claimable after " + MAX_CLICKS_PER_SLOT + " clicks");
         enter(Step.CLOSE);

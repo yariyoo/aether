@@ -14,7 +14,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
-// the emissary npcs, learned from their name tags whenever one is in view and kept across sessions
+// npcs that claim commissions (the emissaries and the king in the royal palace), learned from their name tags and kept across sessions
 public final class Emissaries {
     private final Map<String, BlockPos> known = new HashMap<>();
     private boolean dirty;
@@ -32,7 +32,7 @@ public final class Emissaries {
         for (Entity e : client.level.entitiesForRendering()) {
             if (!(e instanceof ArmorStand stand) || !stand.hasCustomName()) continue;
             String name = TablistUtils.stripColors(stand.getCustomName().getString()).strip();
-            if (!name.toLowerCase(Locale.ROOT).contains("emissary")) continue;
+            if (!claimsCommissions(name)) continue;
             LivingEntity npc = npcUnder(client, stand);
             BlockPos at = (npc != null ? npc : stand).blockPosition();
             BlockPos before = known.put(name, at);
@@ -60,7 +60,7 @@ public final class Emissaries {
         for (Entity e : client.level.entitiesForRendering()) {
             if (!(e instanceof ArmorStand stand) || !stand.hasCustomName()) continue;
             String name = TablistUtils.stripColors(stand.getCustomName().getString()).toLowerCase(Locale.ROOT);
-            if (!name.contains("emissary")) continue;
+            if (!claimsCommissions(name)) continue;
             LivingEntity npc = npcUnder(client, stand);
             if (npc == null) continue;
             double d = npc.blockPosition().distSqr(pos);
@@ -70,6 +70,11 @@ public final class Emissaries {
             }
         }
         return best;
+    }
+
+    static boolean claimsCommissions(String tag) {
+        String lower = tag.strip().toLowerCase(Locale.ROOT);
+        return lower.contains("emissary") || lower.startsWith("king ");
     }
 
     private static LivingEntity npcUnder(Minecraft client, ArmorStand stand) {

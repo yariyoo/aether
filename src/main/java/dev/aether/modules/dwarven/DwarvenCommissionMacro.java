@@ -75,6 +75,7 @@ public final class DwarvenCommissionMacro {
     private static long lastSaveAt;
     private static String lastNothingReason = "";
     private static boolean claimTravel;
+    private static dev.aether.modules.dwarven.claim.Rewards.Tally rewards = dev.aether.modules.dwarven.claim.Rewards.NONE;
     private static BlockPos claimEmissary;
     private static long unreadableSince;
     private static long outsideSince;
@@ -289,6 +290,7 @@ public final class DwarvenCommissionMacro {
         current = null;
         objective = null;
         completed = 0;
+        rewards = dev.aether.modules.dwarven.claim.Rewards.NONE;
         minedBeforeThisRun = miner.mined();
         titaniumBeforeThisRun = miner.titaniumMined();
         sessionStartedAt = now;
@@ -744,7 +746,8 @@ public final class DwarvenCommissionMacro {
         switch (claims.status()) {
             case RUNNING -> { }
             case CLAIMED, NOTHING_TO_CLAIM -> {
-                DwarvenLog.log("claim: " + claims.status() + ", " + claims.claimed() + " claimed");
+                rewards = rewards.plus(claims.earned());
+                DwarvenLog.log("claim: " + claims.status() + ", " + claims.claimed() + " claimed, earned " + claims.earned());
                 budget.succeeded(Failure.CLAIM);
                 lastClaimAt = now;
                 claims.reset();
@@ -783,6 +786,14 @@ public final class DwarvenCommissionMacro {
             case FIGHT -> fighter.target() == null ? "fighting (looking)" : "fighting";
             case WAIT -> "waiting";
         };
+    }
+
+    public static dev.aether.modules.dwarven.claim.Rewards.Tally rewards() {
+        return rewards;
+    }
+
+    public static int mithrilSinceTitanium() {
+        return miner.mithrilSinceTitanium();
     }
 
     public static String hudCommission() {

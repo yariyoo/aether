@@ -607,6 +607,7 @@ public final class AetherConfig {
         public static final IntEntry DWARVEN_BLACKLIST_SECONDS = Config.integer("dwarvenBlacklistSeconds", 60).range(5, 600);
         public static final BooleanEntry SHOW_DWARVEN_HUD = Config.bool("showDwarvenHud", true);
         public static final BooleanEntry DWARVEN_HUD_DEBUG = Config.bool("dwarvenHudDebug", false);
+        public static final BooleanEntry DWARVEN_HUD_STATS = Config.bool("dwarvenHudStats", true);
         public static final IntEntry DWARVEN_HUD_X = Config.integer("dwarvenHudX", 10);
         public static final IntEntry DWARVEN_HUD_Y = Config.integer("dwarvenHudY", 60);
         public static final FloatEntry DWARVEN_HUD_SCALE = Config.floatVal("dwarvenHudScale", 1.0f).range(0.5f, 3.0f);
