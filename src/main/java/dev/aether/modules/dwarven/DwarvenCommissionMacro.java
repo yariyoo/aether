@@ -65,6 +65,7 @@ public final class DwarvenCommissionMacro {
     private static long lastObserveAt;
     private static long lastLearnAt;
     private static long lastSaveAt;
+    private static String lastNothingReason = "";
     private static long unreadableSince;
     private static long outsideSince;
     private static long waitUntil;
@@ -203,11 +204,20 @@ public final class DwarvenCommissionMacro {
 
     private static String readZone() {
         for (String raw : ClientUtils.getSidebarLines()) {
-            String line = TablistUtils.stripColors(raw).strip();
-            int at = line.indexOf('⏣');
-            if (at >= 0) return line.substring(at + 1).replaceAll("[^\\p{L}\\p{N}' ]", "").strip();
+            String zone = zoneFromSidebarLine(TablistUtils.stripColors(raw));
+            if (!zone.isEmpty()) return zone;
         }
         return "";
+    }
+
+    // the location line starts with an icon: '⏣' on older clients, a private-use font glyph on 26.2
+    static String zoneFromSidebarLine(String line) {
+        String text = line.strip();
+        if (text.isEmpty()) return "";
+        int first = text.codePointAt(0);
+        boolean icon = first == '⏣' || first == 'ൠ' || Character.getType(first) == Character.PRIVATE_USE;
+        if (!icon) return "";
+        return text.substring(Character.charCount(first)).replaceAll("[^\\p{L}\\p{N}' ]", "").strip();
     }
 
     private static void begin(Minecraft client, long now) {
@@ -222,6 +232,7 @@ public final class DwarvenCommissionMacro {
         DwarvenStore.load();
         budget = new RetryBudget(AetherConfig.DWARVEN_MAX_RECOVERY.get(), 1500L);
         skipped.clear();
+        lastNothingReason = "";
         unknownAreasTold.clear();
         current = null;
         objective = null;
@@ -326,6 +337,11 @@ public final class DwarvenCommissionMacro {
         CommissionScheduler.Choice choice = CommissionScheduler.choose(open, rules, current == null ? null : current.name(),
                 o -> travelSeconds(o, feet, now), c -> DwarvenStore.WORK.secondsFor(c.name()));
         if (choice == null) {
+            String why = whyNothing(commissions, unknown);
+            if (!why.equals(lastNothingReason)) {
+                lastNothingReason = why;
+                ClientUtils.sendMessage("§eDwarven Commissions is waiting: " + why, false);
+            }
             for (String area : unknown) {
                 if (unknownAreasTold.add(area)) {
                     ClientUtils.sendMessage("§eAether hasn't been to " + area + " yet. Walk there once and it will remember the way.", false);
@@ -335,6 +351,7 @@ public final class DwarvenCommissionMacro {
             pause(5000L, "no commission it can do");
             return;
         }
+        lastNothingReason = "";
         boolean changed = current == null || !current.name().equals(choice.commission().name());
         current = choice.commission();
         objective = choice.objective();
@@ -345,6 +362,23 @@ public final class DwarvenCommissionMacro {
                     describe(commissions)));
         }
         goWork(client, now);
+    }
+
+    private static String whyNothing(List<DwarvenCommission> list, List<String> unknown) {
+        List<String> reasons = new ArrayList<>();
+        for (DwarvenCommission c : list) {
+            if (c.done()) continue;
+            Objective o = Objective.of(c.name());
+            String reason = switch (o.kind()) {
+                case COMBAT -> "combat isn't supported yet";
+                case EVENT -> "events aren't supported yet";
+                case UNKNOWN -> "not a commission it knows";
+                case MINING -> skipped.containsKey(c.name()) ? "resting after failures"
+                        : o.area() != null && unknown.contains(o.area()) ? "hasn't seen " + o.area() + " yet" : "turned off in settings";
+            };
+            reasons.add(c.name() + " (" + reason + ")");
+        }
+        return reasons.isEmpty() ? "no open commissions" : String.join(", ", reasons);
     }
 
     private static String describe(List<DwarvenCommission> list) {
