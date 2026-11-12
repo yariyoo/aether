@@ -142,7 +142,7 @@ class WorldAndMemoryTests {
         assertFalse(route.isEmpty());
         // the route follows the corner rather than cutting across unknown ground
         assertTrue(route.stream().anyMatch(p -> p.getX() >= 36 && p.getZ() <= 8), route.toString());
-        double length = trails.routeLength(new BlockPos(1, 100, 1), new BlockPos(41, 100, 39), 8);
+        double length = trails.routeLength(new BlockPos(1, 100, 1), new BlockPos(41, 100, 39), 8, java.util.Set.of());
         assertTrue(length > 70 && length < 95, "length " + length);
         assertTrue(trails.route(new BlockPos(1, 100, 1), new BlockPos(300, 100, 300), 8, 20).isEmpty());
         TrailMemory reloaded = new TrailMemory();

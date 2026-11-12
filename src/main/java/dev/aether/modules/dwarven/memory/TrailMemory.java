@@ -22,6 +22,18 @@ public final class TrailMemory {
     private static final double MAX_LINK = 7.0;
     private static final double MAX_CLIMB = 1.3;
 
+    // a teleport between two crumbs costs about as much time as walking this far
+    private static final double HOP_COST = 3.0;
+
+    public enum HopKind { AOTV, ETHERWARP }
+
+    // where a recorded aotv or etherwarp started and landed, exact enough to aim the same hop again
+    public record Hop(HopKind kind, double fromX, double fromY, double fromZ, double toX, double toY, double toZ) {}
+
+    // a stop on a route; when hop is set, this point is reached by teleporting from the stop before it
+    public record Waypoint(BlockPos pos, Hop hop) {}
+
+    private final Map<Long, Hop> hops = new HashMap<>();
     private final List<BlockPos> crumbs = new ArrayList<>();
     private final List<Set<Integer>> links = new ArrayList<>();
     private final Map<Long, List<Integer>> grid = new HashMap<>();
@@ -64,6 +76,39 @@ public final class TrailMemory {
         last = -1;
     }
 
+    // recorded ground from the bundled run: consecutive points were walked between
+    public void seedPath(List<BlockPos> path) {
+        int prev = -1;
+        for (BlockPos p : path) {
+            int here = crumbAt(p);
+            if (prev >= 0 && prev != here && Math.sqrt(crumbs.get(prev).distSqr(p)) <= MAX_LINK) link(prev, here);
+            prev = here;
+        }
+    }
+
+    public void seedHop(Hop hop) {
+        int a = crumbAt(BlockPos.containing(hop.fromX(), hop.fromY() + 0.01, hop.fromZ()));
+        int b = crumbAt(BlockPos.containing(hop.toX(), hop.toY() + 0.01, hop.toZ()));
+        if (a == b) return;
+        // teleports only go one way, whatever the height difference
+        links.get(a).add(b);
+        hops.put(edge(a, b), hop);
+    }
+
+    private int crumbAt(BlockPos p) {
+        int here = nearest(p, MERGE);
+        if (here >= 0) return here;
+        here = crumbs.size();
+        crumbs.add(p.immutable());
+        links.add(new HashSet<>());
+        grid.computeIfAbsent(cell(p), k -> new ArrayList<>()).add(here);
+        return here;
+    }
+
+    private static long edge(int a, int b) {
+        return ((long) a << 32) | (b & 0xffffffffL);
+    }
+
     private void link(int a, int b) {
         int rise = crumbs.get(b).getY() - crumbs.get(a).getY();
         // a drop can be walked down but not back up
@@ -92,6 +137,13 @@ public final class TrailMemory {
 
     // waypoints along proven ground from near one point to near another, about every stride blocks; empty when unknown
     public List<BlockPos> route(BlockPos from, BlockPos to, double joinWithin, double stride) {
+        List<BlockPos> out = new ArrayList<>();
+        for (Waypoint w : waypoints(from, to, joinWithin, stride, Set.of())) out.add(w.pos());
+        return out;
+    }
+
+    // like route, but may use recorded teleports; a hop's start is always kept as its own stop so it can be lined up
+    public List<Waypoint> waypoints(BlockPos from, BlockPos to, double joinWithin, double stride, Set<HopKind> hopKinds) {
         int start = nearest(from, joinWithin);
         int goal = nearest(to, joinWithin);
         if (start < 0 || goal < 0 || start == goal) return List.of();
@@ -108,7 +160,10 @@ public final class TrailMemory {
             if (top[0] > cost[at]) continue;
             if (at == goal) break;
             for (int next : links.get(at)) {
-                double c = cost[at] + Math.sqrt(crumbs.get(at).distSqr(crumbs.get(next)));
+                Hop hop = hops.get(edge(at, next));
+                if (hop != null && !hopKinds.contains(hop.kind())) continue;
+                double step = hop != null ? HOP_COST : Math.sqrt(crumbs.get(at).distSqr(crumbs.get(next)));
+                double c = cost[at] + step;
                 if (c < cost[next]) {
                     cost[next] = c;
                     prev[next] = at;
@@ -117,26 +172,38 @@ public final class TrailMemory {
             }
         }
         if (prev[goal] < 0) return List.of();
-        List<BlockPos> path = new ArrayList<>();
-        for (int at = goal; at >= 0; at = prev[at]) path.add(crumbs.get(at));
+        List<Integer> path = new ArrayList<>();
+        for (int at = goal; at >= 0; at = prev[at]) path.add(at);
         Collections.reverse(path);
-        List<BlockPos> thinned = new ArrayList<>();
+        List<Waypoint> thinned = new ArrayList<>();
         double since = 0;
         for (int i = 1; i < path.size(); i++) {
-            since += Math.sqrt(path.get(i).distSqr(path.get(i - 1)));
-            if (since >= stride || i == path.size() - 1) {
-                thinned.add(path.get(i));
+            int a = path.get(i - 1), b = path.get(i);
+            Hop hop = hops.get(edge(a, b));
+            if (hop != null) {
+                boolean startKept = !thinned.isEmpty() && thinned.get(thinned.size() - 1).pos().equals(crumbs.get(a));
+                if (!startKept && i > 1) thinned.add(new Waypoint(crumbs.get(a), null));
+                thinned.add(new Waypoint(crumbs.get(b), hop));
+                since = 0;
+                continue;
+            }
+            since += Math.sqrt(crumbs.get(b).distSqr(crumbs.get(a)));
+            boolean beforeHop = i + 1 < path.size() && hops.containsKey(edge(b, path.get(i + 1)));
+            if (since >= stride || i == path.size() - 1 || beforeHop) {
+                thinned.add(new Waypoint(crumbs.get(b), null));
                 since = 0;
             }
         }
         return thinned;
     }
 
-    public double routeLength(BlockPos from, BlockPos to, double joinWithin) {
-        List<BlockPos> r = route(from, to, joinWithin, 1.0);
+    public double routeLength(BlockPos from, BlockPos to, double joinWithin, Set<HopKind> hopKinds) {
+        List<Waypoint> r = waypoints(from, to, joinWithin, 1.0, hopKinds);
         if (r.isEmpty()) return -1;
-        double total = Math.sqrt(from.distSqr(r.get(0)));
-        for (int i = 1; i < r.size(); i++) total += Math.sqrt(r.get(i).distSqr(r.get(i - 1)));
+        double total = Math.sqrt(from.distSqr(r.get(0).pos()));
+        for (int i = 1; i < r.size(); i++) {
+            total += r.get(i).hop() != null ? HOP_COST : Math.sqrt(r.get(i).pos().distSqr(r.get(i - 1).pos()));
+        }
         return total;
     }
 
@@ -173,7 +240,10 @@ public final class TrailMemory {
         for (JsonElement el : root.getAsJsonArray("links")) {
             long packed = el.getAsLong();
             int a = (int) (packed >> 32), b = (int) packed;
-            if (a < crumbs.size() && b < crumbs.size()) links.get(a).add(b);
+            if (a >= crumbs.size() || b >= crumbs.size()) continue;
+            // teleport links come back from the bundled seed with their hop attached; a bare long one isn't walkable
+            if (Math.sqrt(crumbs.get(a).distSqr(crumbs.get(b))) > MAX_LINK + 1) continue;
+            links.get(a).add(b);
         }
     }
 }

@@ -52,6 +52,24 @@ public final class DwarvenStore {
                 }
             }
             if (root.has("hunts")) HuntPoints.load(root.getAsJsonObject("hunts"));
+            if (root.has("trails")) {
+                JsonObject trails = root.getAsJsonObject("trails");
+                for (var path : trails.getAsJsonArray("paths")) {
+                    java.util.List<net.minecraft.core.BlockPos> points = new java.util.ArrayList<>();
+                    for (var el : path.getAsJsonArray()) {
+                        var p = el.getAsJsonArray();
+                        points.add(new net.minecraft.core.BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt()));
+                    }
+                    TRAILS.seedPath(points);
+                }
+                for (var el : trails.getAsJsonArray("hops")) {
+                    var h = el.getAsJsonArray();
+                    TRAILS.seedHop(new TrailMemory.Hop(TrailMemory.HopKind.valueOf(h.get(6).getAsString()), h.get(0).getAsDouble(),
+                            h.get(1).getAsDouble(), h.get(2).getAsDouble(), h.get(3).getAsDouble(), h.get(4).getAsDouble(), h.get(5).getAsDouble()));
+                }
+            }
+            // where /warp forge puts you, so the first warp of a fresh install is already planned for
+            AREAS.observe(dev.aether.modules.dwarven.nav.AreaNavigator.FORGE_WARP, new net.minecraft.core.BlockPos(0, 149, -69));
             DwarvenLog.log("seeded " + areas.size() + " zones (" + cells + " cells) and fight spots from the bundled run");
         } catch (Exception e) {
             DwarvenLog.log("could not read the bundled seed: " + e);
