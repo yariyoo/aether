@@ -50,6 +50,8 @@ public final class AreaNavigator {
     private static final double AIM_NEAR_MISS = 1.5;
     private static final int MAX_REPLANS = 12;
     private static final int MAX_STEPS = 6;
+    private static final double HOP_MISS_COST = 8.0;
+    private static final long EARLY_STUCK_MS = 3000L;
     private static final long HOP_WAIT_MS = 1500L;
     private static final long HOP_AIM_LIMIT_MS = 2500L;
     private static final float HOP_AIM_DEGREES = 1.2f;
@@ -83,6 +85,7 @@ public final class AreaNavigator {
     private int steps;
     private String lastPlanReason;
     private String aimProblem;
+    private long planningNanos;
     private int legAt;
     private int attempts;
     private boolean etherwarpLeg;
@@ -144,10 +147,15 @@ public final class AreaNavigator {
         long now = System.currentTimeMillis();
         boolean failedFromForge = forge != null && NavFailures.lastFor(goal, forge, now) != null;
         NavFailures.Failure here = NavFailures.lastFor(goal, feet, now);
+        long t0 = System.nanoTime();
+        RoutePlanner.Plan fromHere = planFrom(client, feet);
+        planningNanos += System.nanoTime() - t0;
         RoutePlanner.Warp w = RoutePlanner.forgeDecision(AetherConfig.DWARVEN_FORGE_WARP.get(), forge, feet, AT_FORGE,
-                walkSeconds(feet, goal), forge == null ? 0 : WARP_OVERHEAD_SECONDS + walkSeconds(forge, goal), failedFromForge, here != null);
+                walkSeconds(feet, goal), forge == null ? 0 : WARP_OVERHEAD_SECONDS + walkSeconds(forge, goal), failedFromForge, here != null,
+                fromHere.kind().reachesGoal());
         switch (w) {
             case QUICKER -> DwarvenLog.log("[NAV] the forge is the quicker way to " + label + ", warping");
+            case NO_ROUTE_HERE -> DwarvenLog.log("[NAV] no connected route to " + label + " from here (" + fromHere.reason() + "), starting from the forge");
             case AFTER_FAILURE_HERE -> DwarvenLog.log("[NAV] the last trip to " + label + " from here failed (" + here.reason() + "), coming at it from the forge");
             case FORGE_FAILED -> DwarvenLog.log("[NAV] not warping: the trip to " + label + " from the forge failed recently, planning from here");
             default -> { }
@@ -172,12 +180,14 @@ public final class AreaNavigator {
             return;
         }
         BlockPos feet = client.player.blockPosition();
-        long nowMs = System.currentTimeMillis();
-        RoutePlanner.Plan p = RoutePlanner.plan(DwarvenStore.TRAILS, feet, goal, AetherConfig.DWARVEN_LEG_LENGTH.get(), hopKinds(client),
-                NavFailures.bannedHops(nowMs), NavFailures.unreachable(nowMs), AetherConfig.DWARVEN_LEARN_TRAILS.get());
+        long t0 = System.nanoTime();
+        RoutePlanner.Plan p = planFrom(client, feet);
+        long took = System.nanoTime() - t0;
+        planningNanos += took;
         lastPlanReason = p.reason();
         double direct = Math.sqrt(feet.distSqr(goal));
         if (p.kind() == RoutePlanner.Kind.NONE) {
+            if (forgeFallback(client, feet)) return;
             routeFailed(client, p.reason());
             return;
         }
@@ -191,12 +201,38 @@ public final class AreaNavigator {
         legs = p.legs();
         legAt = 0;
         long hopCount = legs.stream().filter(w -> w.hop() != null).count();
-        DwarvenLog.log(String.format("[NAV] route to %s at %s, %.0f blocks: %s, %d legs, %d teleports", label, goal.toShortString(), direct,
-                p.reason(), legs.size(), hopCount));
+        DwarvenLog.log(String.format("[NAV] route to %s at %s, %.0f blocks: %s, %d legs, %d teleports (planned in %.1fms)", label,
+                goal.toShortString(), direct, p.reason(), legs.size(), hopCount, took / 1e6));
         if (p.kind() == RoutePlanner.Kind.REATTACHED || p.kind() == RoutePlanner.Kind.STEP) {
             DwarvenLog.log("[NAV] first leg is a local walk to " + p.attach().toShortString() + "; it proves the connection is reachable");
         }
         startLeg(client);
+    }
+
+    private RoutePlanner.Plan planFrom(Minecraft client, BlockPos feet) {
+        long nowMs = System.currentTimeMillis();
+        boolean avoid = AetherConfig.DWARVEN_AVOID_FAILED_WAYPOINTS.get();
+        double weight = AetherConfig.DWARVEN_ROUTE_RELIABILITY.get();
+        // each recent miss costs about as much as walking a few extra blocks
+        DwarvenStore.TRAILS.hopPenalty(h -> weight * HOP_MISS_COST * NavFailures.misses(h));
+        return RoutePlanner.plan(DwarvenStore.TRAILS, feet, goal, AetherConfig.DWARVEN_LEG_LENGTH.get(), hopKinds(client),
+                NavFailures.bannedHops(nowMs), avoid ? NavFailures.unreachable(nowMs) : Set.of(), AetherConfig.DWARVEN_LEARN_TRAILS.get(),
+                RoutePlanner.options(AetherConfig.DWARVEN_ROUTE_REATTACH.get(), AetherConfig.DWARVEN_WALK_FALLBACK.get()));
+    }
+
+    // known ground ran out here; the forge is a fixed, reliable starting point unless the trip already failed from it
+    private boolean forgeFallback(Minecraft client, BlockPos feet) {
+        BlockPos forge = forgeLanding(feet);
+        if (warpTried || forge == null || !AetherConfig.DWARVEN_FORGE_WARP.get()) return false;
+        if (Math.sqrt(forge.distSqr(feet)) < AT_FORGE) return false;
+        if (NavFailures.lastFor(goal, forge, System.currentTimeMillis()) != null) return false;
+        DwarvenLog.log("[NAV] no way on from " + feet.toShortString() + " (" + lastPlanReason + "); warping to the forge to start from known ground");
+        warp(client);
+        return true;
+    }
+
+    public long planningNanos() {
+        return planningNanos;
     }
 
     private static Set<HopKind> hopKinds(Minecraft client) {
@@ -289,7 +325,10 @@ public final class AreaNavigator {
             moved = true;
         }
         // route planning can take a few seconds before the first step, which isn't being stuck
-        long allowed = moved ? AetherConfig.DWARVEN_STUCK_SECONDS.get() * 1000L : PLAN_GRACE_MS;
+        long stuckMs = AetherConfig.DWARVEN_STUCK_SECONDS.get() * 1000L;
+        // once it's been moving, a few seconds without getting closer already means the walk won't make it
+        if (AetherConfig.DWARVEN_PREDICTIVE_STUCK.get()) stuckMs = Math.min(stuckMs, EARLY_STUCK_MS);
+        long allowed = moved ? stuckMs : PLAN_GRACE_MS;
         if (result.get() == 2) {
             legFailed(client, "no path");
         } else if (now - Math.max(progressAt, legStartedAt) > allowed) {

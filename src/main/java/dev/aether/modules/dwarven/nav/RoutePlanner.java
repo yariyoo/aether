@@ -32,11 +32,25 @@ public final class RoutePlanner {
     private RoutePlanner() {
     }
 
+    // reattach widens the search for a way onto known ground; walkFallback allows pathfinding where nothing is known
+    public record Options(boolean reattach, boolean walkFallback) {}
+
+    public static final Options DEFAULT = new Options(true, true);
+
+    public static Options options(boolean reattach, boolean walkFallback) {
+        return new Options(reattach, walkFallback);
+    }
+
     public static Plan plan(TrailMemory trails, BlockPos feet, BlockPos goal, double stride, Set<HopKind> kinds,
                             Set<Hop> banned, Set<BlockPos> unreachable, boolean useTrails) {
+        return plan(trails, feet, goal, stride, kinds, banned, unreachable, useTrails, DEFAULT);
+    }
+
+    public static Plan plan(TrailMemory trails, BlockPos feet, BlockPos goal, double stride, Set<HopKind> kinds,
+                            Set<Hop> banned, Set<BlockPos> unreachable, boolean useTrails, Options opt) {
         double direct = Math.sqrt(feet.distSqr(goal));
         if (useTrails) {
-            for (double radius : new double[]{JOIN, REATTACH, MAX_WALK}) {
+            for (double radius : opt.reattach() ? new double[]{JOIN, REATTACH, MAX_WALK} : new double[]{JOIN}) {
                 TrailMemory.Route r = trails.routeFrom(feet, goal, radius, JOIN, stride, kinds, banned, unreachable, false);
                 if (r.isEmpty() && !r.complete()) continue;
                 Kind kind = r.attachDistance() > JOIN ? Kind.REATTACHED : Kind.KNOWN;
@@ -48,8 +62,8 @@ public final class RoutePlanner {
                 return new Plan(Kind.PARTIAL, toward.legs(), toward.attach(), toward.attachDistance(), "as far as known ground goes");
             }
         }
-        if (direct <= MAX_WALK) return new Plan(Kind.DIRECT, List.of(new Waypoint(goal, null)), null, 0, "short enough to pathfind");
-        if (useTrails) {
+        if (direct <= MAX_WALK && opt.walkFallback()) return new Plan(Kind.DIRECT, List.of(new Waypoint(goal, null)), null, 0, "short enough to pathfind");
+        if (useTrails && opt.walkFallback()) {
             List<BlockPos> steps = trails.stepsToward(feet, goal, MAX_WALK, STEP_GAIN, unreachable);
             if (!steps.isEmpty()) {
                 BlockPos step = steps.get(0);
@@ -64,20 +78,27 @@ public final class RoutePlanner {
         return new Plan(Kind.NONE, List.of(), null, 0, why);
     }
 
-    public enum Warp { NO_FORGE, AT_FORGE, FORGE_FAILED, AFTER_FAILURE_HERE, QUICKER, NOT_QUICKER }
+    public enum Warp { NO_FORGE, AT_FORGE, FORGE_FAILED, AFTER_FAILURE_HERE, NO_ROUTE_HERE, QUICKER, NOT_QUICKER }
 
     // whether to /warp forge before walking; a trip that already failed from the forge isn't started from there again
     public static Warp forgeDecision(boolean enabled, BlockPos forge, BlockPos feet, double atForge, double hereSeconds,
                                      double fromForgeSeconds, boolean failedFromForge, boolean failedFromHere) {
+        return forgeDecision(enabled, forge, feet, atForge, hereSeconds, fromForgeSeconds, failedFromForge, failedFromHere, true);
+    }
+
+    // routeHere is whether a plan from where we stand actually reaches the goal; a straight-line guess isn't a route
+    public static Warp forgeDecision(boolean enabled, BlockPos forge, BlockPos feet, double atForge, double hereSeconds,
+                                     double fromForgeSeconds, boolean failedFromForge, boolean failedFromHere, boolean routeHere) {
         if (!enabled || forge == null) return Warp.NO_FORGE;
         if (Math.sqrt(forge.distSqr(feet)) < atForge) return Warp.AT_FORGE;
         if (failedFromForge) return Warp.FORGE_FAILED;
         if (failedFromHere) return Warp.AFTER_FAILURE_HERE;
+        if (!routeHere) return Warp.NO_ROUTE_HERE;
         return fromForgeSeconds + 5 < hereSeconds ? Warp.QUICKER : Warp.NOT_QUICKER;
     }
 
     public static boolean warps(Warp w) {
-        return w == Warp.AFTER_FAILURE_HERE || w == Warp.QUICKER;
+        return w == Warp.AFTER_FAILURE_HERE || w == Warp.NO_ROUTE_HERE || w == Warp.QUICKER;
     }
 
     private static List<Waypoint> withGoal(List<Waypoint> legs, BlockPos goal) {

@@ -44,6 +44,12 @@ public final class TrailMemory {
     private final Map<Long, List<Integer>> grid = new HashMap<>();
     private int last = -1;
     private boolean dirty;
+    // extra cost for teleports that have been unreliable, so a longer dependable route can win
+    private java.util.function.ToDoubleFunction<Hop> hopPenalty = h -> 0;
+
+    public void hopPenalty(java.util.function.ToDoubleFunction<Hop> penalty) {
+        hopPenalty = penalty == null ? h -> 0 : penalty;
+    }
 
     public int size() {
         return crumbs.size();
@@ -265,7 +271,7 @@ public final class TrailMemory {
             for (int next : links.get(at)) {
                 Hop hop = hops.get(edge(at, next));
                 if (hop != null && (!hopKinds.contains(hop.kind()) || bannedHops.contains(hop))) continue;
-                double step = hop != null ? HOP_COST : Math.sqrt(crumbs.get(at).distSqr(crumbs.get(next)));
+                double step = hop != null ? HOP_COST + hopPenalty.applyAsDouble(hop) : Math.sqrt(crumbs.get(at).distSqr(crumbs.get(next)));
                 double c = cost[at] + step;
                 if (c < cost[next]) {
                     cost[next] = c;

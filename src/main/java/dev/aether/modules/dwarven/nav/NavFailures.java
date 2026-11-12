@@ -89,6 +89,10 @@ public final class NavFailures {
         return HOP_MISSES.merge(hop, 1, Integer::sum);
     }
 
+    public static synchronized int misses(Hop hop) {
+        return HOP_MISSES.getOrDefault(hop, 0);
+    }
+
     public static synchronized void hopLanded(Hop hop) {
         HOP_MISSES.remove(hop);
     }
