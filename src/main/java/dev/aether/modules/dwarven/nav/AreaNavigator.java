@@ -36,7 +36,6 @@ public final class AreaNavigator {
     private static final double JOIN = 12.0;
     private static final double LEG_REACHED = 3.0;
     private static final long PLAN_GRACE_MS = 8000L;
-    private static final long WARP_WAIT_MS = 6000L;
     private static final double WARP_MOVED = 20.0;
     private static final long WARP_OVERHEAD_SECONDS = 4;
     private static final double WALK_SPEED = 5.0;
@@ -51,6 +50,8 @@ public final class AreaNavigator {
     private static final float HOP_AIM_DEGREES = 1.2f;
     // the server only sees the sneak a tick or two after the key goes down
     private static final int SNEAK_SETTLE_TICKS = 3;
+    private static final double HOP_START_REACHED = 1.0;
+    private static final long HOP_ALIGN_LIMIT_MS = 8000L;
 
     private Status status = Status.IDLE;
     private BlockPos goal;
@@ -63,6 +64,9 @@ public final class AreaNavigator {
     private Vec3 hopLaunch;
     private long hopSince;
     private int sneakTicks;
+    private boolean hopAligned;
+    private boolean hopWalking;
+    private static final java.util.Map<TrailMemory.Hop, Long> bannedHops = new java.util.HashMap<>();
     private int legAt;
     private int attempts;
     private boolean etherwarpLeg;
@@ -138,7 +142,11 @@ public final class AreaNavigator {
         BlockPos feet = client.player.blockPosition();
         List<Waypoint> route = new ArrayList<>();
         Set<HopKind> kinds = hopKinds(client);
-        if (AetherConfig.DWARVEN_LEARN_TRAILS.get()) route.addAll(DwarvenStore.TRAILS.waypoints(feet, goal, JOIN, AetherConfig.DWARVEN_LEG_LENGTH.get(), kinds));
+        long nowMs = System.currentTimeMillis();
+        bannedHops.values().removeIf(until -> until <= nowMs);
+        if (AetherConfig.DWARVEN_LEARN_TRAILS.get()) {
+            route.addAll(DwarvenStore.TRAILS.waypoints(feet, goal, JOIN, AetherConfig.DWARVEN_LEG_LENGTH.get(), kinds, bannedHops.keySet()));
+        }
         boolean known = !route.isEmpty();
         if (route.isEmpty() || route.get(route.size() - 1).pos().distSqr(goal) > 4) route.add(new Waypoint(goal, null));
         legs = route;
@@ -269,19 +277,21 @@ public final class AreaNavigator {
         DwarvenStore.TRAILS.interrupted();
         // the warp turns the camera; that's ours, not a staff check
         FailsafeManager.addRotationGracePeriod(AetherConfig.FAILSAFE_ROTATION_WARP_GRACE_MS.get());
+        DwarvenLog.log("nav: forge warp requested");
         ClientUtils.sendCommand("/warp forge");
     }
 
     private void tickWarp(Minecraft client, BlockPos feet, long now) {
         if (Math.sqrt(feet.distSqr(warpFrom)) > WARP_MOVED) {
             warping = false;
+            DwarvenLog.log("nav: forge arrival confirmed at " + feet.toShortString() + ", planning from here");
             DwarvenStore.AREAS.observe(FORGE_WARP, feet);
             DwarvenStore.TRAILS.interrupted();
             attempts = 0;
             plan(client);
             return;
         }
-        if (now - warpAt > WARP_WAIT_MS) {
+        if (now - warpAt > AetherConfig.DWARVEN_WARP_TIMEOUT_MS.get()) {
             warping = false;
             // we may already be standing at the forge, in which case the warp moves us nowhere
             DwarvenLog.log("nav: /warp forge didn't move us");
@@ -293,6 +303,8 @@ public final class AreaNavigator {
     private void startHop(Minecraft client, TrailMemory.Hop hop) {
         hopping = true;
         hopClicked = false;
+        hopAligned = false;
+        hopWalking = false;
         hopSince = System.currentTimeMillis();
         sneakTicks = 0;
         hopAim = null;
@@ -310,32 +322,61 @@ public final class AreaNavigator {
                 double off = pos.distanceTo(new Vec3(hop.toX(), hop.toY(), hop.toZ()));
                 DwarvenStore.TRAILS.interrupted();
                 if (off > HOP_LANDING_TOLERANCE) {
-                    legFailed(client, String.format("%s landed %.1f blocks off", hop.kind(), off));
+                    hopFailed(client, hop, String.format("landed %.1f blocks from the recorded spot", off));
                     return;
                 }
                 legAt++;
                 attempts = 0;
                 if (legAt >= legs.size()) {
-                    status = Math.sqrt(client.player.blockPosition().distSqr(goal)) <= arriveWithin ? Status.ARRIVED : status;
-                    if (status != Status.ARRIVED) plan(client);
+                    if (Math.sqrt(client.player.blockPosition().distSqr(goal)) <= arriveWithin) status = Status.ARRIVED;
+                    else plan(client);
                     return;
                 }
                 startLeg(client);
             } else if (now - hopSince > HOP_WAIT_MS) {
-                endHop(client);
-                legFailed(client, hop.kind() + " didn't teleport (out of mana or blocked?)");
+                hopFailed(client, hop, "didn't teleport (out of mana or blocked?)");
             }
             return;
         }
+        Vec3 start = new Vec3(hop.fromX(), hop.fromY(), hop.fromZ());
+        if (!hopAligned) {
+            // stand where the recording stood before aiming, so the same throw lands in the same place
+            double off = Math.hypot(pos.x - start.x, pos.z - start.z);
+            if (off <= HOP_START_REACHED && Math.abs(pos.y - start.y) < 1.5) {
+                if (hopWalking) PathfindingManager.stop();
+                hopWalking = false;
+                hopAligned = true;
+                hopSince = now;
+            } else {
+                if (!hopWalking) {
+                    hopWalking = true;
+                    AtomicInteger r = new AtomicInteger();
+                    result = r;
+                    BlockPos to = BlockPos.containing(start.x, start.y + 0.01, start.z);
+                    PathfindingManager.startConfiguredWalk(client, to.getX(), to.getY(), to.getZ(), () -> r.compareAndSet(0, 1),
+                            () -> r.compareAndSet(0, 2), true, 0.4, false, true);
+                }
+                if (result.get() == 2 || now - hopSince > HOP_ALIGN_LIMIT_MS) {
+                    hopFailed(client, hop, "couldn't stand on its start");
+                }
+                return;
+            }
+        }
         int slot = ether ? GearManager.findEtherwarpAspectOfTheVoidHotbarSlot(client) : aotvSlot(client);
         if (slot < 0) {
-            endHop(client);
-            legFailed(client, "no aotv in the hotbar for the " + hop.kind());
+            hopFailed(client, hop, "no aotv in the hotbar for it");
             return;
         }
+        if (hopAim == null) {
+            // check the landing can be aimed at before touching sneak or the hotbar
+            hopAim = aim(client, hop);
+            if (hopAim == null) {
+                hopFailed(client, hop, "its landing block can't be seen from here");
+                return;
+            }
+        }
         if (now - hopSince > HOP_AIM_LIMIT_MS) {
-            endHop(client);
-            legFailed(client, hop.kind() + " never lined up");
+            hopFailed(client, hop, "never lined up");
             return;
         }
         if (FailsafeManager.getCurrentSelectedSlot(client) != slot) {
@@ -345,14 +386,6 @@ public final class AreaNavigator {
         if (ether) {
             ClientUtils.setKeyMappingState(client.options.keyShift, true);
             if (++sneakTicks < SNEAK_SETTLE_TICKS) return;
-        }
-        if (hopAim == null) {
-            hopAim = aim(client, hop);
-            if (hopAim == null) {
-                endHop(client);
-                legFailed(client, "can't see where the " + hop.kind() + " lands from here");
-                return;
-            }
         }
         // hypixel traces etherwarp from its own sneaking eye height, not the modern client's
         Vec3 eye = ether ? EtherwarpHelper.getEyePosition(client, pos) : client.player.getEyePosition();
@@ -366,6 +399,24 @@ public final class AreaNavigator {
         hopClicked = true;
         hopSince = now;
         ClientUtils.performUseClickInstant();
+    }
+
+    // a failed teleport is blacklisted and the route is planned again without it, so the same throw isn't repeated
+    private void hopFailed(Minecraft client, TrailMemory.Hop hop, String why) {
+        endHop(client);
+        if (hopWalking) PathfindingManager.stop();
+        hopWalking = false;
+        bannedHops.put(hop, System.currentTimeMillis() + AetherConfig.DWARVEN_ROUTE_BLACKLIST_SECONDS.get() * 1000L);
+        attempts++;
+        DwarvenLog.log("nav: " + hop.kind().name().toLowerCase() + " from " + BlockPos.containing(hop.fromX(), hop.fromY(), hop.fromZ()).toShortString()
+                + " " + why + "; leaving it out and recalculating the route (" + attempts + "/" + AetherConfig.DWARVEN_NAV_RETRIES.get() + ")");
+        if (attempts <= AetherConfig.DWARVEN_NAV_RETRIES.get()) {
+            int keep = attempts;
+            plan(client);
+            attempts = keep;
+            return;
+        }
+        legFailed(client, "teleports kept failing");
     }
 
     private Vec3 aim(Minecraft client, TrailMemory.Hop hop) {
@@ -389,6 +440,7 @@ public final class AreaNavigator {
 
     private void endHop(Minecraft client) {
         hopping = false;
+        RotationManager.cancelRotation();
         if (client.options != null) ClientUtils.setKeyMappingState(client.options.keyShift, false);
     }
 }

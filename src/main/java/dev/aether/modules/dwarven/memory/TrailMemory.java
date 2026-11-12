@@ -144,6 +144,12 @@ public final class TrailMemory {
 
     // like route, but may use recorded teleports; a hop's start is always kept as its own stop so it can be lined up
     public List<Waypoint> waypoints(BlockPos from, BlockPos to, double joinWithin, double stride, Set<HopKind> hopKinds) {
+        return waypoints(from, to, joinWithin, stride, hopKinds, Set.of());
+    }
+
+    // bannedHops are teleports that failed recently and must not be planned again yet
+    public List<Waypoint> waypoints(BlockPos from, BlockPos to, double joinWithin, double stride, Set<HopKind> hopKinds,
+                                    Set<Hop> bannedHops) {
         int start = nearest(from, joinWithin);
         int goal = nearest(to, joinWithin);
         if (start < 0 || goal < 0 || start == goal) return List.of();
@@ -161,7 +167,7 @@ public final class TrailMemory {
             if (at == goal) break;
             for (int next : links.get(at)) {
                 Hop hop = hops.get(edge(at, next));
-                if (hop != null && !hopKinds.contains(hop.kind())) continue;
+                if (hop != null && (!hopKinds.contains(hop.kind()) || bannedHops.contains(hop))) continue;
                 double step = hop != null ? HOP_COST : Math.sqrt(crumbs.get(at).distSqr(crumbs.get(next)));
                 double c = cost[at] + step;
                 if (c < cost[next]) {
@@ -182,7 +188,8 @@ public final class TrailMemory {
             Hop hop = hops.get(edge(a, b));
             if (hop != null) {
                 boolean startKept = !thinned.isEmpty() && thinned.get(thinned.size() - 1).pos().equals(crumbs.get(a));
-                if (!startKept && i > 1) thinned.add(new Waypoint(crumbs.get(a), null));
+                // the hop's start is kept as a stop even when it's the first one, so we walk onto it before teleporting
+                if (!startKept) thinned.add(new Waypoint(crumbs.get(a), null));
                 thinned.add(new Waypoint(crumbs.get(b), hop));
                 since = 0;
                 continue;
