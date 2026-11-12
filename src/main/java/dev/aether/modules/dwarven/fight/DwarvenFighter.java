@@ -585,7 +585,8 @@ public final class DwarvenFighter {
         Set<Integer> out = new HashSet<>();
         Vec3 eye = client.player.getEyePosition();
         for (Entity e : client.level.entitiesForRendering()) {
-            boolean arrow = e.getType() == net.minecraft.world.entity.EntityType.ARROW || e.getType() == net.minecraft.world.entity.EntityType.SPECTRAL_ARROW;
+            String type = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath();
+            boolean arrow = type.equals("arrow") || type.equals("spectral_arrow");
             if (arrow && e.position().distanceTo(eye) < 5) out.add(e.getId());
         }
         return out;
