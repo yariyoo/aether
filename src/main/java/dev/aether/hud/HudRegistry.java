@@ -66,6 +66,7 @@ public class HudRegistry {
         ELEMENTS.add(watermarkHud);
         ELEMENTS.add(mainStatusHud);
         ELEMENTS.add(scoreboardHud);
+        ELEMENTS.add(new DwarvenHudElement());
 
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("aether", "hud"), (guiGraphics, delta) -> {
                         Minecraft mc = Minecraft.getInstance();

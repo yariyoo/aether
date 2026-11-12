@@ -554,6 +554,51 @@ public final class AetherConfig {
         // compat stub; metal detector activation is runtime-only
         @Deprecated
         @SuppressWarnings("unchecked")
+        public static final IntEntry DWARVEN_STRATEGY = Config.integer("dwarvenStrategy", 0).range(0, 3);
+        public static final IntEntry DWARVEN_STOP_AFTER = Config.integer("dwarvenStopAfter", 0).range(0, 1000);
+        public static final IntEntry DWARVEN_SESSION_MINUTES = Config.integer("dwarvenSessionMinutes", 0).range(0, 1440);
+        public static final BooleanEntry DWARVEN_PAUSE_ON_INPUT = Config.bool("dwarvenPauseOnInput", true);
+        public static final BooleanEntry DWARVEN_MITHRIL = Config.bool("dwarvenMithril", true);
+        public static final BooleanEntry DWARVEN_TITANIUM = Config.bool("dwarvenTitanium", true);
+        public static final BooleanEntry DWARVEN_AREA_MINING = Config.bool("dwarvenAreaMining", true);
+        public static final BooleanEntry DWARVEN_OVERLAP = Config.bool("dwarvenOverlap", true);
+        public static final FloatEntry DWARVEN_SWITCH_GAIN = Config.floatVal("dwarvenSwitchGain", 0.25f).range(0.0f, 0.9f);
+        public static final IntEntry DWARVEN_LOCAL_RADIUS = Config.integer("dwarvenLocalRadius", 24).range(8, 48);
+        public static final IntEntry DWARVEN_EXTENDED_RADIUS = Config.integer("dwarvenExtendedRadius", 64).range(16, 128);
+        public static final IntEntry DWARVEN_SCAN_BUDGET = Config.integer("dwarvenScanBudget", 6).range(1, 40);
+        public static final BooleanEntry DWARVEN_VEIN_MEMORY = Config.bool("dwarvenVeinMemory", true);
+        public static final BooleanEntry DWARVEN_EXPLORE = Config.bool("dwarvenExplore", true);
+        public static final IntEntry DWARVEN_RECHECK_SECONDS = Config.integer("dwarvenRecheckSeconds", 30).range(5, 300);
+        public static final IntEntry DWARVEN_MIN_VEIN = Config.integer("dwarvenMinVein", 3).range(1, 20);
+        public static final BooleanEntry DWARVEN_TITANIUM_PRIORITY = Config.bool("dwarvenTitaniumPriority", true);
+        public static final BooleanEntry DWARVEN_MITHRIL_FOR_TITANIUM = Config.bool("dwarvenMithrilForTitanium", true);
+        public static final FloatEntry DWARVEN_BLOCK_TIMEOUT = Config.floatVal("dwarvenBlockTimeout", 3.0f).range(1.0f, 15.0f);
+        public static final BooleanEntry DWARVEN_ADAPTIVE_TIMEOUT = Config.bool("dwarvenAdaptiveTimeout", true);
+        public static final BooleanEntry DWARVEN_REPOSITION = Config.bool("dwarvenReposition", true);
+        public static final BooleanEntry DWARVEN_SNEAK = Config.bool("dwarvenSneak", true);
+        public static final BooleanEntry DWARVEN_PICKAXE_ABILITY = Config.bool("dwarvenPickaxeAbility", true);
+        public static final BooleanEntry DWARVEN_FORGE_WARP = Config.bool("dwarvenForgeWarp", true);
+        public static final BooleanEntry DWARVEN_USE_ETHERWARP = Config.bool("dwarvenUseEtherwarp", true);
+        public static final BooleanEntry DWARVEN_LEARN_TRAILS = Config.bool("dwarvenLearnTrails", true);
+        public static final IntEntry DWARVEN_STUCK_SECONDS = Config.integer("dwarvenStuckSeconds", 5).range(2, 30);
+        public static final IntEntry DWARVEN_NAV_RETRIES = Config.integer("dwarvenNavRetries", 3).range(1, 10);
+        public static final IntEntry DWARVEN_CAM_MODE = Config.integer("dwarvenCamMode", 1).range(0, 2);
+        public static final IntEntry DWARVEN_CAM_EASING = Config.integer("dwarvenCamEasing", 1).range(0, 2);
+        public static final FloatEntry DWARVEN_CAM_MIN_SPEED = Config.floatVal("dwarvenCamMinSpeed", 25.0f).range(5.0f, 200.0f);
+        public static final FloatEntry DWARVEN_CAM_MAX_SPEED = Config.floatVal("dwarvenCamMaxSpeed", 420.0f).range(60.0f, 1200.0f);
+        public static final FloatEntry DWARVEN_CAM_ACCEL = Config.floatVal("dwarvenCamAccel", 1800.0f).range(200.0f, 8000.0f);
+        public static final FloatEntry DWARVEN_CAM_DECEL = Config.floatVal("dwarvenCamDecel", 1500.0f).range(200.0f, 8000.0f);
+        public static final FloatEntry DWARVEN_CAM_SMOOTHING = Config.floatVal("dwarvenCamSmoothing", 0.35f).range(0.0f, 0.9f);
+        public static final BooleanEntry DWARVEN_CAM_CURVED = Config.bool("dwarvenCamCurved", true);
+        public static final FloatEntry DWARVEN_CAM_TOLERANCE = Config.floatVal("dwarvenCamTolerance", 0.6f).range(0.1f, 3.0f);
+        public static final BooleanEntry DWARVEN_CAM_NO_OVERSHOOT = Config.bool("dwarvenCamNoOvershoot", true);
+        public static final IntEntry DWARVEN_MAX_RECOVERY = Config.integer("dwarvenMaxRecovery", 4).range(1, 10);
+        public static final IntEntry DWARVEN_BLACKLIST_SECONDS = Config.integer("dwarvenBlacklistSeconds", 60).range(5, 600);
+        public static final BooleanEntry SHOW_DWARVEN_HUD = Config.bool("showDwarvenHud", true);
+        public static final BooleanEntry DWARVEN_HUD_DEBUG = Config.bool("dwarvenHudDebug", false);
+        public static final IntEntry DWARVEN_HUD_X = Config.integer("dwarvenHudX", 10);
+        public static final IntEntry DWARVEN_HUD_Y = Config.integer("dwarvenHudY", 60);
+        public static final FloatEntry DWARVEN_HUD_SCALE = Config.floatVal("dwarvenHudScale", 1.0f).range(0.5f, 3.0f);
         public static final BooleanEntry ENABLE_METAL_DETECTOR = Config.bool("enableMetalDetector", false)
                         .nonPersistent();
         public static final ListEntry<String> METAL_DETECTOR_BACKPACK_BLACKLIST = Config.list(

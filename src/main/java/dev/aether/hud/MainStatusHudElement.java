@@ -251,6 +251,7 @@ public class MainStatusHudElement extends HudElement {
         return switch (st) {
             case FARMING       -> "Farming";
             case METAL_DETECTING -> "Metal Detecting";
+            case DWARVEN_COMMISSIONS -> "Dwarven Commissions";
             case AUTO_CARNIVAL -> "Auto Carnival";
             case CLEANING      -> "Cleaning";
             case RECOVERING    -> "Recovering";
