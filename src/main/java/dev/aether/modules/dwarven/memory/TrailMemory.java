@@ -47,6 +47,13 @@ public final class TrailMemory {
     // extra cost for teleports that have been unreliable, so a longer dependable route can win
     private java.util.function.ToDoubleFunction<Hop> hopPenalty = h -> 0;
 
+    private double hopCost = HOP_COST;
+
+    // a teleport priced as the walking distance its measured time would cover, so routes are compared by time
+    public void hopCost(double blocks) {
+        hopCost = Math.max(1.0, blocks);
+    }
+
     public void hopPenalty(java.util.function.ToDoubleFunction<Hop> penalty) {
         hopPenalty = penalty == null ? h -> 0 : penalty;
     }
@@ -271,7 +278,7 @@ public final class TrailMemory {
             for (int next : links.get(at)) {
                 Hop hop = hops.get(edge(at, next));
                 if (hop != null && (!hopKinds.contains(hop.kind()) || bannedHops.contains(hop))) continue;
-                double step = hop != null ? HOP_COST + hopPenalty.applyAsDouble(hop) : Math.sqrt(crumbs.get(at).distSqr(crumbs.get(next)));
+                double step = hop != null ? hopCost + hopPenalty.applyAsDouble(hop) : Math.sqrt(crumbs.get(at).distSqr(crumbs.get(next)));
                 double c = cost[at] + step;
                 if (c < cost[next]) {
                     cost[next] = c;
